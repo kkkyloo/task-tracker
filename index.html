@@ -31,16 +31,18 @@
         const { useState, useEffect, useRef, useCallback } = React;
 
         const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+        const fullMonths = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
         const dows = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+        const fullDows = ['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
         const colorOrder = { red: 1, orange: 2, green: 3, blue: 4, default: 5 };
 
         const formatTimeInput = (raw) => {
-            const digits = raw.replace(/\D/g, '').slice(0, 4);
+            const digits = (raw || '').replace(/\D/g, '').slice(0, 4);
             if (digits.length <= 2) return digits;
             return digits.slice(0, 2) + ':' + digits.slice(2);
         };
 
-        const TimeInput = ({ value, onChange, className }) => {
+        const TimeInput = ({ value, onChange, className, placeholder = "--:--" }) => {
             const handleKey = (e) => {
                 if (e.key === 'Backspace' && value && value.endsWith(':')) {
                     e.preventDefault();
@@ -52,7 +54,7 @@
                     type="text"
                     inputMode="numeric"
                     maxLength={5}
-                    placeholder="--:--"
+                    placeholder={placeholder}
                     className={className}
                     value={value || ''}
                     onKeyDown={handleKey}
@@ -127,7 +129,7 @@
         }
 
         function App() {
-            const [data, setData] = useState({ tasks: [], work: {} });
+            const [data, setData] = useState({ tasks: [], work: {}, templates: [] });
             const [isEncrypted, setIsEncrypted] = useState(false);
             const [pendingContainer, setPendingContainer] = useState(null);
             const [masterPassword, setMasterPassword] = useState(() => sessionStorage.getItem('tracker_master_pass') || '');
@@ -144,7 +146,6 @@
             const [draggedTaskId, setDraggedTaskId] = useState(null);
             const [dropTarget, setDropTarget] = useState({ id: null, position: null });
             const [collapsedWeeks, setCollapsedWeeks] = useState({});
-            const [expandedBreaks, setExpandedBreaks] = useState({});
 
             const [extraWeeks, setExtraWeeks] = useState(() => {
                 const saved = localStorage.getItem('tracker_extra_weeks');
@@ -157,6 +158,11 @@
             const [syncError, setSyncError] = useState('');
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
             const [copySuccess, setCopySuccess] = useState(false);
+
+            // Quick Time Popover & Template Modals
+            const [editingTimeDate, setEditingTimeDate] = useState(null);
+            const [templateModalWeek, setTemplateModalWeek] = useState(null);
+            const [newTemplateName, setNewTemplateName] = useState('');
 
             // Pomodoro Focus Timer
             const [isPomodoroOpen, setIsPomodoroOpen] = useState(false);
@@ -222,6 +228,47 @@
                 localStorage.setItem('tracker_extra_weeks', extraWeeks);
             }, [extraWeeks]);
 
+            const timeToMin = (t) => {
+                if (!t) return null;
+                const [h, m] = t.split(':').map(Number);
+                return h * 60 + m;
+            };
+
+            const formatHours = (hours) => {
+                const value = parseFloat(hours);
+                if (!Number.isFinite(value) || value <= 0) return '';
+                const totalMinutes = Math.round(value * 60);
+                const h = Math.floor(totalMinutes / 60);
+                const m = totalMinutes % 60;
+                return h + 'ч' + (m ? ' ' + m + 'м' : '');
+            };
+
+            const recalcHoursObj = (w) => {
+                const s = timeToMin(w.start), e = timeToMin(w.end);
+                if (s == null || e == null) return { ...w, hours: '' };
+                let total = (e >= s ? e - s : e + 1440 - s);
+                (w.breaks || []).forEach(b => {
+                    const bs = timeToMin(b.start), be = timeToMin(b.end);
+                    if (bs != null && be != null) total -= (be >= bs ? be - bs : be + 1440 - bs);
+                });
+                return { ...w, hours: Math.max(0, total / 60).toFixed(2) };
+            };
+
+            const defaultTemplates = [
+                {
+                    id: 'std-5-2',
+                    name: '💼 Стандартная работа 5/2 (09:00-18:00, 40ч)',
+                    type: 'work',
+                    workHours: { start: '09:00', end: '18:00', breaks: [{ start: '13:00', end: '14:00' }], hours: '8.00' }
+                },
+                {
+                    id: 'std-10-19',
+                    name: '💼 Смена 10:00 — 19:00 (Обед 1ч)',
+                    type: 'work',
+                    workHours: { start: '10:00', end: '19:00', breaks: [{ start: '14:00', end: '15:00' }], hours: '8.00' }
+                }
+            ];
+
             const normalizeData = (raw) => {
                 const work = {};
                 Object.entries(raw.work || {}).forEach(([date, w]) => {
@@ -231,9 +278,13 @@
                             w = { ...w, start: `${String(m[1]).padStart(2,'0')}:${m[2]}`, end: `${String(m[3]).padStart(2,'0')}:${m[4]}` };
                         }
                     }
-                    work[date] = w;
+                    work[date] = recalcHoursObj(w);
                 });
-                return { tasks: raw.tasks || [], work };
+                return {
+                    tasks: (raw.tasks || []).map(t => ({ ...t, isUrgent: !!t.isUrgent })),
+                    work,
+                    templates: raw.templates && raw.templates.length ? raw.templates : defaultTemplates
+                };
             };
 
             const processLoadedJson = useCallback(async (parsedJson, currentPass) => {
@@ -467,23 +518,26 @@
             const addTask = (date) => {
                 const text = newTaskText[date] && newTaskText[date].trim();
                 if (!text) return;
-                const newTask = { id: Date.now(), date, text, isDone: false, color: 'default', type: viewMode };
+                const newTask = { id: Date.now(), date, text, isDone: false, isUrgent: false, color: 'default', type: viewMode };
                 saveToServer({ ...data, tasks: [newTask, ...data.tasks] });
                 setNewTaskText({ ...newTaskText, [date]: '' });
             };
 
             const toggleDone = (id) => saveToServer({ ...data, tasks: data.tasks.map(t => t.id === id ? { ...t, isDone: !t.isDone } : t) });
+            const toggleUrgent = (id) => saveToServer({ ...data, tasks: data.tasks.map(t => t.id === id ? { ...t, isUrgent: !t.isUrgent } : t) });
+
             const deleteTask = (id) => {
                 if (confirm('Удалить задачу?')) {
                     saveToServer({ ...data, tasks: data.tasks.filter(t => t.id !== id) });
                 }
             };
+
             const setColor = (id, color) => saveToServer({ ...data, tasks: data.tasks.map(t => t.id === id ? { ...t, color } : t) });
 
             const sortDayTasks = (date) => {
                 const daySorted = data.tasks
                     .filter(t => t.date === date && (t.type || 'study') === viewMode)
-                    .sort((a, b) => (colorOrder[a.color || 'default'] || 5) - (colorOrder[b.color || 'default'] || 5) || Number(a.isDone) - Number(b.isDone) || b.id - a.id);
+                    .sort((a, b) => (Number(b.isUrgent || 0) - Number(a.isUrgent || 0)) || (colorOrder[a.color || 'default'] || 5) - (colorOrder[b.color || 'default'] || 5) || Number(a.isDone) - Number(b.isDone) || b.id - a.id);
                 let idx = 0;
                 saveToServer({
                     ...data,
@@ -534,57 +588,136 @@
                 setDropTarget({ id: null, position: null });
             };
 
-            const timeToMin = (t) => {
-                if (!t) return null;
-                const [h, m] = t.split(':').map(Number);
-                return h * 60 + m;
+            // Work Hours Actions & Presets
+            const applyWorkPreset = (date, preset) => {
+                let w = { start: '', end: '', breaks: [], hours: '' };
+                if (preset === '8h-09-18') {
+                    w = { start: '09:00', end: '18:00', breaks: [{ start: '13:00', end: '14:00' }] };
+                } else if (preset === '8h-10-19') {
+                    w = { start: '10:00', end: '19:00', breaks: [{ start: '14:00', end: '15:00' }] };
+                } else if (preset === '4h-morning') {
+                    w = { start: '09:00', end: '13:00', breaks: [] };
+                } else if (preset === '4h-afternoon') {
+                    w = { start: '14:00', end: '18:00', breaks: [] };
+                } else if (preset === 'yesterday') {
+                    const prevDt = new Date(date);
+                    prevDt.setDate(prevDt.getDate() - 1);
+                    const prevKey = toDateKey(prevDt);
+                    const prevWork = data.work[prevKey];
+                    if (prevWork && prevWork.start) {
+                        w = { ...prevWork };
+                    }
+                } else if (preset === 'clear') {
+                    w = { start: '', end: '', breaks: [], hours: '' };
+                }
+                const updated = recalcHoursObj(w);
+                saveToServer({ ...data, work: { ...data.work, [date]: updated } });
             };
 
-            const formatHours = (hours) => {
-                const value = parseFloat(hours);
-                if (!Number.isFinite(value) || value <= 0) return '';
-                const totalMinutes = Math.round(value * 60);
-                const h = Math.floor(totalMinutes / 60);
-                const m = totalMinutes % 60;
-                return h + 'ч' + (m ? ' ' + m + 'м' : '');
-            };
-
-            const recalcHours = (date, patch = {}) => {
-                const w = { ...(data.work[date] || {}), ...patch };
-                const s = timeToMin(w.start), e = timeToMin(w.end);
-                if (s == null || e == null) return patch;
-                let total = (e >= s ? e - s : e + 1440 - s);
-                (w.breaks || []).forEach(b => {
-                    const bs = timeToMin(b.start), be = timeToMin(b.end);
-                    if (bs != null && be != null) total -= (be >= bs ? be - bs : be + 1440 - bs);
+            const fillWeekWork = (weekDates, preset = '8h-09-18') => {
+                const updatedWork = { ...data.work };
+                weekDates.forEach(d => {
+                    const dow = new Date(d).getDay();
+                    if (dow !== 0 && dow !== 6) {
+                        let w = { start: '09:00', end: '18:00', breaks: [{ start: '13:00', end: '14:00' }] };
+                        if (preset === '8h-10-19') w = { start: '10:00', end: '19:00', breaks: [{ start: '14:00', end: '15:00' }] };
+                        updatedWork[d] = recalcHoursObj(w);
+                    }
                 });
-                return { ...patch, hours: Math.max(0, total / 60).toFixed(2) };
+                saveToServer({ ...data, work: updatedWork });
             };
 
-            const handleWorkTime = (date, field, value) => {
-                const patch = recalcHours(date, { [field]: value });
-                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            const clearWeekWork = (weekDates) => {
+                if (confirm('Очистить рабочие часы за всю неделю?')) {
+                    const updatedWork = { ...data.work };
+                    weekDates.forEach(d => {
+                        delete updatedWork[d];
+                    });
+                    saveToServer({ ...data, work: updatedWork });
+                }
             };
 
-            const handleBreakChange = (date, idx, field, value) => {
-                const breaks = [...(data.work[date]?.breaks || [])];
-                breaks[idx] = { ...breaks[idx], [field]: value };
-                const patch = recalcHours(date, { breaks });
-                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            // Templates Management
+            const saveCurrentWeekAsTemplate = (weekDates) => {
+                if (!newTemplateName.trim()) {
+                    alert('Введите название шаблона!');
+                    return;
+                }
+                const weekTasks = data.tasks.filter(t => weekDates.includes(t.date));
+                const weekDayTasks = {};
+                weekDates.forEach((d, idx) => {
+                    weekDayTasks[idx] = weekTasks.filter(t => t.date === d).map(t => ({
+                        text: t.text,
+                        color: t.color || 'default',
+                        type: t.type || 'study',
+                        isUrgent: !!t.isUrgent
+                    }));
+                });
+                const weekDayWork = {};
+                weekDates.forEach((d, idx) => {
+                    if (data.work[d]) weekDayWork[idx] = data.work[d];
+                });
+
+                const newTpl = {
+                    id: 'tpl-' + Date.now(),
+                    name: newTemplateName.trim(),
+                    type: viewMode,
+                    dayTasks: weekDayTasks,
+                    dayWork: weekDayWork
+                };
+
+                const updated = [...(data.templates || []), newTpl];
+                saveToServer({ ...data, templates: updated });
+                setNewTemplateName('');
+                alert(`Шаблон "${newTpl.name}" успешно сохранен!`);
             };
 
-            const addBreak = (date) => {
-                const breaks = [...(data.work[date]?.breaks || []), { start: '', end: '' }];
-                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), breaks } } });
+            const applyTemplateToWeek = (template, weekDates) => {
+                const newTasks = [...data.tasks];
+                const newWork = { ...data.work };
+
+                if (template.workHours) {
+                    weekDates.forEach(d => {
+                        const dow = new Date(d).getDay();
+                        if (dow !== 0 && dow !== 6) {
+                            newWork[d] = recalcHoursObj(template.workHours);
+                        }
+                    });
+                }
+
+                if (template.dayWork) {
+                    weekDates.forEach((d, idx) => {
+                        if (template.dayWork[idx]) newWork[d] = recalcHoursObj(template.dayWork[idx]);
+                    });
+                }
+
+                if (template.dayTasks) {
+                    weekDates.forEach((d, idx) => {
+                        const tList = template.dayTasks[idx] || [];
+                        tList.forEach(t => {
+                            newTasks.unshift({
+                                id: Date.now() + Math.floor(Math.random() * 100000),
+                                date: d,
+                                text: t.text,
+                                isDone: false,
+                                isUrgent: !!t.isUrgent,
+                                color: t.color || 'default',
+                                type: t.type || viewMode
+                            });
+                        });
+                    });
+                }
+
+                saveToServer({ ...data, tasks: newTasks, work: newWork });
+                setTemplateModalWeek(null);
+                alert(`✅ Шаблон "${template.name}" применен к неделе!`);
             };
 
-            const removeBreak = (date, idx) => {
-                const breaks = (data.work[date]?.breaks || []).filter((_, i) => i !== idx);
-                const patch = recalcHours(date, { breaks });
-                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            const deleteTemplate = (id) => {
+                if (confirm('Удалить этот шаблон?')) {
+                    saveToServer({ ...data, templates: (data.templates || []).filter(t => t.id !== id) });
+                }
             };
-
-            const toggleBreaks = (date) => setExpandedBreaks(prev => ({ ...prev, [date]: !prev[date] }));
 
             const getWeeks = () => {
                 const dates = [];
@@ -849,38 +982,74 @@
 
                             return (
                                 <section key={wIdx} className="transition-all">
-                                    <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center text-white rounded-xl p-4 mb-4 shadow-md gap-3 ${
+                                    <div className={`flex flex-col lg:flex-row justify-between items-start lg:items-center text-white rounded-2xl p-4 mb-4 shadow-md gap-3 ${
                                         isWeekCurrent(week)
                                             ? (viewMode === 'work' ? 'bg-emerald-700 ring-2 ring-emerald-400' : 'bg-blue-700 dark:bg-sky-700 ring-2 ring-blue-400')
                                             : (viewMode === 'work' ? 'bg-emerald-800/90' : 'bg-slate-700 dark:bg-zinc-800')
                                     }`}>
-                                        <button
-                                            onClick={() => toggleWeek(wIdx)}
-                                            className="flex flex-wrap items-center gap-2 sm:gap-3 text-left font-bold uppercase text-xs tracking-wider"
-                                        >
-                                            <span className="text-base font-black px-1.5 py-0.5 rounded bg-black/20">{collapsed ? '+' : '−'}</span>
-                                            <span>Неделя {wIdx + 1}</span>
-                                            <span className="text-[11px] font-normal text-white/80 lowercase">({dateRangeLabel})</span>
-                                            <span className={`rounded px-2 py-0.5 text-[9px] font-black ${isWeekCurrent(week) ? 'bg-amber-400 text-slate-900' : 'bg-white/15'}`}>
-                                                {weekState}
-                                            </span>
+                                        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                                            <button
+                                                onClick={() => toggleWeek(wIdx)}
+                                                className="flex items-center gap-2 text-left font-bold uppercase text-xs tracking-wider"
+                                            >
+                                                <span className="text-base font-black px-2 py-0.5 rounded bg-black/20">{collapsed ? '+' : '−'}</span>
+                                                <span className="text-sm">Неделя {wIdx + 1}</span>
+                                                <span className="text-[11px] font-normal text-white/80 lowercase">({dateRangeLabel})</span>
+                                                <span className={`rounded-md px-2 py-0.5 text-[9px] font-black ${isWeekCurrent(week) ? 'bg-amber-400 text-slate-900 shadow' : 'bg-white/15'}`}>
+                                                    {weekState}
+                                                </span>
+                                            </button>
+
                                             {collapsed && undoneCount > 0 && (
-                                                <span className="text-[10px] normal-case bg-rose-500/80 px-2 py-0.5 rounded text-white font-semibold">
+                                                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded text-white font-semibold">
                                                     {undoneCount} активных
                                                 </span>
                                             )}
-                                        </button>
 
-                                        <div className="flex items-center gap-3 w-full sm:w-1/3 min-w-[200px]">
-                                            <div className="flex-1 h-2 bg-black/25 rounded-full overflow-hidden">
-                                                <div
-                                                    className="h-full bg-emerald-400 transition-all duration-500"
-                                                    style={{ width: `${Math.min(worked / (target || 1) * 100, 100)}%` }}
-                                                ></div>
+                                            {weekTasks.filter(t => t.isUrgent && !t.isDone).length > 0 && (
+                                                <span className="text-[10px] bg-rose-500 px-2 py-0.5 rounded text-white font-black animate-pulse">
+                                                    🔥 {weekTasks.filter(t => t.isUrgent && !t.isDone).length} дедлайна
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {/* Super Tools for the Week */}
+                                        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-between lg:justify-end">
+                                            <div className="flex items-center gap-1.5">
+                                                <button
+                                                    onClick={() => fillWeekWork(week, '8h-09-18')}
+                                                    title="Заполнить Пн-Пт с 09:00 до 18:00 (Обед 1ч, 40ч в неделю)"
+                                                    className="px-2.5 py-1 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-lg font-bold text-[11px] transition-all flex items-center gap-1"
+                                                >
+                                                    <span>⚡ Пн-Пт 8ч</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => setTemplateModalWeek(week)}
+                                                    title="Применить или сохранить шаблон для этой недели"
+                                                    className="px-2.5 py-1 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-lg font-bold text-[11px] transition-all flex items-center gap-1"
+                                                >
+                                                    <span>📋 Шаблоны</span>
+                                                </button>
+                                                <button
+                                                    onClick={() => clearWeekWork(week)}
+                                                    title="Очистить часы за неделю"
+                                                    className="px-2 py-1 bg-white/10 hover:bg-rose-500/80 text-white/80 hover:text-white rounded-lg font-bold text-[11px] transition-all"
+                                                >
+                                                    🧹
+                                                </button>
                                             </div>
-                                            <span className="text-[11px] font-black italic whitespace-nowrap">
-                                                {formatHours(worked) || '0ч'} / {target}ч
-                                            </span>
+
+                                            <div className="flex items-center gap-3 min-w-[160px]">
+                                                <div className="w-24 h-2 bg-black/25 rounded-full overflow-hidden">
+                                                    <div
+                                                        className="h-full bg-emerald-400 transition-all duration-500"
+                                                        style={{ width: `${Math.min(worked / (target || 1) * 100, 100)}%` }}
+                                                    ></div>
+                                                </div>
+                                                <span className="text-[11px] font-black italic whitespace-nowrap">
+                                                    {formatHours(worked) || '0ч'} / {target}ч
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -892,6 +1061,11 @@
                                                 const isWeekend = [0, 6].includes(dt.getDay());
                                                 const dayTasks = data.tasks.filter(t => t.date === dateStr && (t.type || 'study') === viewMode);
                                                 const work = data.work[dateStr] || {};
+                                                const hasWork = !!(work.start && work.end);
+                                                const totalBreaksMinutes = (work.breaks || []).reduce((acc, b) => {
+                                                    const bs = timeToMin(b.start), be = timeToMin(b.end);
+                                                    return acc + (bs != null && be != null ? (be >= bs ? be - bs : be + 1440 - bs) : 0);
+                                                }, 0);
 
                                                 return (
                                                     <div
@@ -899,7 +1073,7 @@
                                                         id={`day-${dateStr}`}
                                                         onDragOver={e => e.preventDefault()}
                                                         onDrop={e => onDropOnDay(e, dateStr)}
-                                                        className={`flex flex-col bg-slate-50 dark:bg-zinc-800 rounded-xl shadow-sm border transition-all min-h-[460px] ${
+                                                        className={`flex flex-col bg-slate-50 dark:bg-zinc-800 rounded-2xl shadow-sm border transition-all min-h-[470px] ${
                                                             isToday
                                                                 ? (viewMode === 'work'
                                                                     ? 'border-emerald-600 ring-2 ring-emerald-500/20 dark:border-emerald-400 dark:ring-emerald-400/30 shadow-md'
@@ -907,85 +1081,92 @@
                                                                 : 'border-slate-300 dark:border-zinc-700'
                                                         }`}
                                                     >
-                                                        <div className={`p-3 text-center border-b border-slate-300 dark:border-zinc-700 rounded-t-xl flex-shrink-0 ${
+                                                        {/* Day Header */}
+                                                        <div className={`p-3 border-b rounded-t-2xl flex justify-between items-center ${
                                                             isToday
-                                                                ? 'bg-blue-50 dark:bg-sky-950/40'
+                                                                ? (viewMode === 'work' ? 'bg-emerald-600 text-white' : 'bg-blue-700 dark:bg-sky-600 text-white')
                                                                 : isWeekend
-                                                                ? 'bg-rose-50/60 dark:bg-rose-950/20'
-                                                                : 'bg-white/80 dark:bg-zinc-700/50'
+                                                                ? 'bg-slate-200/80 dark:bg-zinc-700/60 border-slate-300 dark:border-zinc-700 text-slate-800 dark:text-zinc-200'
+                                                                : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-800 dark:text-zinc-200'
                                                         }`}>
-                                                            <div className="flex items-center justify-between px-1">
-                                                                <span className="text-[10px] font-black uppercase text-slate-500 dark:text-zinc-400">{dows[dt.getDay()]}</span>
-                                                                {isToday && <span className="bg-blue-600 text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded">Сегодня</span>}
+                                                            <div className="flex items-baseline gap-1.5">
+                                                                <span className="font-black text-sm tracking-wide">{dows[dt.getDay()]}</span>
+                                                                <span className="text-xs opacity-90">{dt.getDate()} {months[dt.getMonth()]}</span>
                                                             </div>
-                                                            <div className={`text-3xl font-black leading-none my-1 ${viewMode === 'work' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-700 dark:text-sky-400'}`}>
-                                                                {dt.getDate()}
-                                                            </div>
-                                                            <div className="text-[9px] uppercase font-bold text-slate-500 dark:text-zinc-400">
-                                                                {months[dt.getMonth()]}
-                                                            </div>
+                                                            {isToday && (
+                                                                <span className="bg-white/20 text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-wider">
+                                                                    СЕГОДНЯ
+                                                                </span>
+                                                            )}
                                                         </div>
 
-                                                        <div className="p-2.5 border-b border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/20 flex-shrink-0">
-                                                            <div className="flex items-center gap-1">
-                                                                <TimeInput
-                                                                    className="w-0 flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-1.5 py-1 outline-none focus:border-emerald-500 dark:focus:border-emerald-400"
-                                                                    value={work.start || ''}
-                                                                    onChange={v => handleWorkTime(dateStr, 'start', v)}
-                                                                />
-                                                                <span className="text-slate-400 text-[9px] flex-shrink-0">—</span>
-                                                                <TimeInput
-                                                                    className="w-0 flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-1.5 py-1 outline-none focus:border-emerald-500 dark:focus:border-emerald-400"
-                                                                    value={work.end || ''}
-                                                                    onChange={v => handleWorkTime(dateStr, 'end', v)}
-                                                                />
-                                                                <button
-                                                                    onClick={() => toggleBreaks(dateStr)}
-                                                                    title="Перерывы"
-                                                                    className={`flex-shrink-0 px-1.5 py-1 rounded text-[9px] font-black border transition-colors ${
-                                                                        expandedBreaks[dateStr]
-                                                                            ? 'bg-amber-100 border-amber-300 text-amber-700 dark:bg-amber-950/40 dark:border-amber-700 dark:text-amber-300'
-                                                                            : 'bg-white dark:bg-zinc-700 border-slate-300 dark:border-zinc-600 text-slate-500 dark:text-zinc-400'
-                                                                    }`}
+                                                        {/* Modern Work Hours Block */}
+                                                        <div className="p-2 border-b border-slate-200 dark:border-zinc-700/70 bg-slate-100/60 dark:bg-zinc-800/40">
+                                                            {hasWork ? (
+                                                                <div
+                                                                    onClick={() => setEditingTimeDate(dateStr)}
+                                                                    className="group relative cursor-pointer p-2 rounded-xl bg-white dark:bg-zinc-700 border border-emerald-300 dark:border-emerald-700/50 hover:border-emerald-500 dark:hover:border-emerald-400 shadow-sm transition-all flex items-center justify-between"
                                                                 >
-                                                                    ☕{(work.breaks && work.breaks.length) ? ` ${work.breaks.length}` : ''}
-                                                                </button>
-                                                                {work.hours && (
-                                                                    <span className="flex-shrink-0 text-[10px] font-black text-emerald-600 dark:text-emerald-400">
-                                                                        {formatHours(work.hours)}
-                                                                    </span>
-                                                                )}
-                                                            </div>
-
-                                                            {expandedBreaks[dateStr] && (
-                                                                <div className="mt-2 space-y-1">
-                                                                    {(work.breaks || []).map((b, bi) => (
-                                                                        <div key={bi} className="flex items-center gap-1">
-                                                                            <TimeInput
-                                                                                className="flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-amber-300 dark:border-amber-600 rounded px-1 py-0.5 outline-none"
-                                                                                value={b.start || ''}
-                                                                                onChange={v => handleBreakChange(dateStr, bi, 'start', v)}
-                                                                            />
-                                                                            <span className="text-slate-400 text-[9px]">—</span>
-                                                                            <TimeInput
-                                                                                className="flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-amber-300 dark:border-amber-600 rounded px-1 py-0.5 outline-none"
-                                                                                value={b.end || ''}
-                                                                                onChange={v => handleBreakChange(dateStr, bi, 'end', v)}
-                                                                            />
-                                                                            <button onClick={() => removeBreak(dateStr, bi)} className="text-[10px] text-red-400 font-black px-1">×</button>
-                                                                        </div>
-                                                                    ))}
+                                                                    <div className="flex items-center gap-2">
+                                                                        <span className="text-xs font-mono font-bold text-slate-800 dark:text-zinc-100">
+                                                                            {work.start} — {work.end}
+                                                                        </span>
+                                                                        {totalBreaksMinutes > 0 && (
+                                                                            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-0.5">
+                                                                                ☕ {totalBreaksMinutes}м
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <div className="flex items-center gap-1.5">
+                                                                        <span className="px-2 py-0.5 rounded-md bg-emerald-500 text-white font-black text-xs shadow-sm">
+                                                                            {formatHours(work.hours) || '0ч'}
+                                                                        </span>
+                                                                        <button
+                                                                            onClick={(e) => { e.stopPropagation(); applyWorkPreset(dateStr, 'clear'); }}
+                                                                            title="Очистить часы"
+                                                                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 font-black text-xs px-1"
+                                                                        >
+                                                                            ✕
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="flex items-center justify-between gap-1">
+                                                                    <div className="flex items-center gap-1">
+                                                                        <button
+                                                                            onClick={() => applyWorkPreset(dateStr, '8h-09-18')}
+                                                                            className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 text-[10px] font-bold transition-all"
+                                                                            title="09:00 - 18:00 (Обед 1ч = 8ч)"
+                                                                        >
+                                                                            +8ч
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => applyWorkPreset(dateStr, '4h-morning')}
+                                                                            className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-blue-500 hover:text-blue-600 dark:hover:text-sky-400 text-[10px] font-bold transition-all"
+                                                                            title="09:00 - 13:00 (4ч)"
+                                                                        >
+                                                                            +4ч
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => applyWorkPreset(dateStr, 'yesterday')}
+                                                                            className="px-1.5 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-600 text-[10px] font-bold text-slate-500 dark:text-zinc-400"
+                                                                            title="Скопировать со вчерашнего дня"
+                                                                        >
+                                                                            ↩️
+                                                                        </button>
+                                                                    </div>
                                                                     <button
-                                                                        onClick={() => addBreak(dateStr)}
-                                                                        className="w-full text-[9px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-700 rounded py-0.5 hover:bg-amber-100 transition-colors"
+                                                                        onClick={() => setEditingTimeDate(dateStr)}
+                                                                        className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-zinc-700/80 hover:bg-blue-100 text-slate-600 dark:text-zinc-300 hover:text-blue-700 text-[10px] font-bold transition-all"
                                                                     >
-                                                                        + перерыв
+                                                                        ✏️ Вручную
                                                                     </button>
                                                                 </div>
                                                             )}
                                                         </div>
 
-                                                        <div className="p-2 flex-1 space-y-1.5 overflow-y-auto max-h-[380px]">
+                                                        {/* Task List */}
+                                                        <div className="flex-1 p-2 space-y-1.5 overflow-y-auto max-h-[380px]">
                                                             {dayTasks.map(t => (
                                                                 <div
                                                                     key={t.id}
@@ -993,46 +1174,59 @@
                                                                     onDragStart={e => onDragStart(e, t.id)}
                                                                     onDragOver={e => onDragOverTask(e, t.id)}
                                                                     onDrop={e => onDropOnTask(e, dateStr, t.id)}
-                                                                    onDragLeave={() => setDropTarget({ id: null, position: null })}
-                                                                    className={`group task-item relative p-2.5 rounded-lg border flex flex-col justify-between transition-all ${
-                                                                        dropTarget.id === t.id && dropTarget.position === 'top' ? 'border-t-4 border-t-blue-500' : ''
-                                                                    } ${
-                                                                        dropTarget.id === t.id && dropTarget.position === 'bottom' ? 'border-b-4 border-b-blue-500' : ''
-                                                                    } ${taskColorClass(t.color)} ${t.isDone ? 'opacity-40 grayscale' : ''}`}
+                                                                    className={`group relative p-2.5 rounded-xl border shadow-sm transition-all duration-150 ${taskColorClass(t.color)} ${
+                                                                        t.isUrgent && !t.isDone
+                                                                            ? 'ring-2 ring-rose-500 border-rose-400 dark:border-rose-500'
+                                                                            : ''
+                                                                    } ${dropTarget.id === t.id ? (dropTarget.position === 'top' ? 'border-t-4 border-t-blue-500' : 'border-b-4 border-b-blue-500') : ''}`}
                                                                 >
-                                                                    <div className="flex items-start gap-2">
-                                                                        <div className="cursor-pointer mt-0.5 flex-shrink-0" onClick={() => toggleDone(t.id)}>
-                                                                            {t.isDone ? (
-                                                                                <div className="w-4 h-4 bg-emerald-500 rounded flex items-center justify-center text-white text-[9px] font-bold">✓</div>
-                                                                            ) : (
-                                                                                <div className="w-4 h-4 border border-slate-400 dark:border-zinc-500 rounded hover:border-emerald-500"></div>
-                                                                            )}
+                                                                    {t.isUrgent && (
+                                                                        <div className="mb-1 flex items-center gap-1">
+                                                                            <span className="px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider bg-rose-500 text-white">
+                                                                                🔥 ДЕДЛАЙН
+                                                                            </span>
                                                                         </div>
-                                                                        <div className="flex-1 leading-tight font-medium text-slate-800 dark:text-zinc-100 break-words text-[12px]">
+                                                                    )}
+
+                                                                    <div className="flex items-start gap-2">
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={t.isDone}
+                                                                            onChange={() => toggleDone(t.id)}
+                                                                            className="mt-0.5 rounded w-4 h-4 text-blue-600 focus:ring-0 cursor-pointer flex-shrink-0"
+                                                                        />
+                                                                        <div className="flex-1 min-w-0">
                                                                             {editingId === t.id ? (
-                                                                                <textarea
+                                                                                <input
                                                                                     autoFocus
-                                                                                    className="w-full bg-transparent outline-none resize-none"
+                                                                                    className="w-full text-xs bg-white dark:bg-zinc-700 border border-blue-500 rounded px-1.5 py-0.5 outline-none"
                                                                                     value={editValue}
                                                                                     onChange={e => setEditValue(e.target.value)}
                                                                                     onBlur={() => {
-                                                                                        saveToServer({
-                                                                                            ...data,
-                                                                                            tasks: data.tasks.map(item => item.id === t.id ? { ...item, text: editValue } : item)
-                                                                                        });
+                                                                                        saveToServer({ ...data, tasks: data.tasks.map(x => x.id === t.id ? { ...x, text: editValue } : x) });
                                                                                         setEditingId(null);
+                                                                                    }}
+                                                                                    onKeyDown={e => {
+                                                                                        if (e.key === 'Enter') {
+                                                                                            saveToServer({ ...data, tasks: data.tasks.map(x => x.id === t.id ? { ...x, text: editValue } : x) });
+                                                                                            setEditingId(null);
+                                                                                        }
                                                                                     }}
                                                                                 />
                                                                             ) : (
-                                                                                <div onClick={() => { setEditingId(t.id); setEditValue(t.text); }}>
+                                                                                <span
+                                                                                    onDoubleClick={() => { setEditingId(t.id); setEditValue(t.text); }}
+                                                                                    className={`text-xs break-words block leading-snug cursor-pointer ${t.isDone ? 'line-through opacity-50' : 'font-medium'}`}
+                                                                                >
                                                                                     {t.text}
-                                                                                </div>
+                                                                                </span>
                                                                             )}
                                                                         </div>
                                                                     </div>
 
-                                                                    <div className="task-tools flex items-center justify-between mt-2 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all">
-                                                                        <div className="flex gap-1">
+                                                                    {/* Task Tools: Colors, Urgent, Delete */}
+                                                                    <div className="task-tools flex items-center justify-between mt-2 pt-1 border-t border-slate-200/60 dark:border-zinc-700/60 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all">
+                                                                        <div className="flex items-center gap-1">
                                                                             {['default', 'red', 'orange', 'green', 'blue'].map(c => (
                                                                                 <button
                                                                                     key={c}
@@ -1041,8 +1235,15 @@
                                                                                     className={`w-2.5 h-2.5 rounded-full border border-slate-400 ${swatchClass(c)}`}
                                                                                 ></button>
                                                                             ))}
+                                                                            <button
+                                                                                onClick={() => toggleUrgent(t.id)}
+                                                                                title={t.isUrgent ? 'Снять дедлайн' : 'Отметить как дедлайн / горящую задачу'}
+                                                                                className={`ml-1 text-[11px] transition-transform hover:scale-125 ${t.isUrgent ? 'opacity-100' : 'opacity-40 hover:opacity-100'}`}
+                                                                            >
+                                                                                🔥
+                                                                            </button>
                                                                         </div>
-                                                                        <button onClick={() => deleteTask(t.id)} className="text-[9px] font-bold text-red-500 uppercase hover:underline">
+                                                                        <button onClick={() => deleteTask(t.id)} className="text-[9px] font-bold text-rose-500 uppercase hover:underline">
                                                                             Удал.
                                                                         </button>
                                                                     </div>
@@ -1050,10 +1251,11 @@
                                                             ))}
                                                         </div>
 
-                                                        <div className="p-2 border-t border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/30 rounded-b-xl flex-shrink-0">
+                                                        {/* Add Task Input */}
+                                                        <div className="p-2 border-t border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/30 rounded-b-2xl flex-shrink-0">
                                                             <div className="flex gap-1.5">
                                                                 <input
-                                                                    className="flex-1 min-w-0 text-[11px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1 outline-none focus:border-blue-500 dark:focus:border-sky-400"
+                                                                    className="flex-1 min-w-0 text-[11px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-lg px-2 py-1.5 outline-none focus:border-blue-500 dark:focus:border-sky-400"
                                                                     placeholder="Новая задача..."
                                                                     value={newTaskText[dateStr] || ''}
                                                                     onChange={e => setNewTaskText({ ...newTaskText, [dateStr]: e.target.value })}
@@ -1061,14 +1263,14 @@
                                                                 />
                                                                 <button
                                                                     onClick={() => sortDayTasks(dateStr)}
-                                                                    title="Сортировать: красный, оранжевый, зеленый, синий"
-                                                                    className="w-7 h-7 rounded bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 text-[10px] font-black text-slate-600 dark:text-zinc-200"
+                                                                    title="Сортировать: дедлайны, цвета, готовность"
+                                                                    className="w-7 h-7 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 text-[10px] font-black text-slate-600 dark:text-zinc-200 hover:bg-slate-100"
                                                                 >
                                                                     1-4
                                                                 </button>
                                                                 <button
                                                                     onClick={() => addTask(dateStr)}
-                                                                    className={`w-7 h-7 rounded text-white font-black text-xs ${viewMode === 'work' ? 'bg-emerald-600' : 'bg-blue-700 dark:bg-sky-600'}`}
+                                                                    className={`w-7 h-7 rounded-lg text-white font-black text-xs ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-700 hover:bg-blue-800 dark:bg-sky-600'}`}
                                                                 >
                                                                     +
                                                                 </button>
@@ -1093,6 +1295,248 @@
                         </button>
                     </div>
 
+                    {/* Quick Time Editor Modal / Popover */}
+                    {editingTimeDate && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-3xl shadow-2xl max-w-md w-full space-y-5">
+                                <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
+                                    <div>
+                                        <h3 className="text-base font-bold text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                                            ⏱️ Время и часы
+                                        </h3>
+                                        <p className="text-xs text-slate-500 dark:text-zinc-400">
+                                            {fullDows[new Date(editingTimeDate).getDay()]}, {new Date(editingTimeDate).getDate()} {fullMonths[new Date(editingTimeDate).getMonth()]}
+                                        </p>
+                                    </div>
+                                    <button onClick={() => setEditingTimeDate(null)} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
+                                </div>
+
+                                {/* 1-Click Presets */}
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-bold uppercase text-slate-500 dark:text-zinc-400">Быстрые пресеты в 1 клик</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            onClick={() => { applyWorkPreset(editingTimeDate, '8h-09-18'); setEditingTimeDate(null); }}
+                                            className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 font-bold text-xs text-left"
+                                        >
+                                            💼 09:00 — 18:00
+                                            <span className="block text-[10px] font-normal opacity-80">Обед 13-14 • 8ч</span>
+                                        </button>
+                                        <button
+                                            onClick={() => { applyWorkPreset(editingTimeDate, '8h-10-19'); setEditingTimeDate(null); }}
+                                            className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 font-bold text-xs text-left"
+                                        >
+                                            💼 10:00 — 19:00
+                                            <span className="block text-[10px] font-normal opacity-80">Обед 14-15 • 8ч</span>
+                                        </button>
+                                        <button
+                                            onClick={() => { applyWorkPreset(editingTimeDate, '4h-morning'); setEditingTimeDate(null); }}
+                                            className="p-2.5 rounded-xl bg-blue-50 dark:bg-sky-950/40 border border-blue-200 dark:border-sky-800 hover:bg-blue-100 text-blue-800 dark:text-sky-300 font-bold text-xs text-left"
+                                        >
+                                            ⏱️ 09:00 — 13:00
+                                            <span className="block text-[10px] font-normal opacity-80">Полдня • 4ч</span>
+                                        </button>
+                                        <button
+                                            onClick={() => { applyWorkPreset(editingTimeDate, '4h-afternoon'); setEditingTimeDate(null); }}
+                                            className="p-2.5 rounded-xl bg-blue-50 dark:bg-sky-950/40 border border-blue-200 dark:border-sky-800 hover:bg-blue-100 text-blue-800 dark:text-sky-300 font-bold text-xs text-left"
+                                        >
+                                            ⏱️ 14:00 — 18:00
+                                            <span className="block text-[10px] font-normal opacity-80">Полдня • 4ч</span>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Custom Time Editor */}
+                                <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-2xl border border-slate-200 dark:border-zinc-700">
+                                    <label className="text-[10px] font-bold uppercase text-slate-500 dark:text-zinc-400">Ручной ввод интервала</label>
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex-1">
+                                            <span className="text-[10px] text-slate-500 block mb-1">Начало</span>
+                                            <TimeInput
+                                                value={data.work[editingTimeDate]?.start || ''}
+                                                onChange={val => {
+                                                    const current = data.work[editingTimeDate] || {};
+                                                    const updated = recalcHoursObj({ ...current, start: val });
+                                                    saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                }}
+                                                className="w-full text-center font-mono font-bold text-sm bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-xl py-2 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <span className="text-slate-400 font-bold mt-4">—</span>
+                                        <div className="flex-1">
+                                            <span className="text-[10px] text-slate-500 block mb-1">Конец</span>
+                                            <TimeInput
+                                                value={data.work[editingTimeDate]?.end || ''}
+                                                onChange={val => {
+                                                    const current = data.work[editingTimeDate] || {};
+                                                    const updated = recalcHoursObj({ ...current, end: val });
+                                                    saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                }}
+                                                className="w-full text-center font-mono font-bold text-sm bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-xl py-2 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Breaks */}
+                                    <div className="pt-2 border-t border-slate-200 dark:border-zinc-700">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-[10px] font-bold uppercase text-slate-500 dark:text-zinc-400">☕ Перерывы / Обед</span>
+                                            <button
+                                                onClick={() => {
+                                                    const current = data.work[editingTimeDate] || {};
+                                                    const breaks = [...(current.breaks || []), { start: '13:00', end: '14:00' }];
+                                                    const updated = recalcHoursObj({ ...current, breaks });
+                                                    saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                }}
+                                                className="text-[10px] font-bold text-blue-600 dark:text-sky-400 hover:underline"
+                                            >
+                                                + Добавить обед (1ч)
+                                            </button>
+                                        </div>
+
+                                        {(data.work[editingTimeDate]?.breaks || []).map((b, bIdx) => (
+                                            <div key={bIdx} className="flex items-center gap-2 mb-2">
+                                                <TimeInput
+                                                    value={b.start}
+                                                    onChange={val => {
+                                                        const current = data.work[editingTimeDate] || {};
+                                                        const breaks = [...(current.breaks || [])];
+                                                        breaks[bIdx] = { ...breaks[bIdx], start: val };
+                                                        const updated = recalcHoursObj({ ...current, breaks });
+                                                        saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                    }}
+                                                    className="flex-1 text-center font-mono text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-lg py-1 outline-none"
+                                                />
+                                                <span className="text-slate-400 text-xs">—</span>
+                                                <TimeInput
+                                                    value={b.end}
+                                                    onChange={val => {
+                                                        const current = data.work[editingTimeDate] || {};
+                                                        const breaks = [...(current.breaks || [])];
+                                                        breaks[bIdx] = { ...breaks[bIdx], end: val };
+                                                        const updated = recalcHoursObj({ ...current, breaks });
+                                                        saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                    }}
+                                                    className="flex-1 text-center font-mono text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-lg py-1 outline-none"
+                                                />
+                                                <button
+                                                    onClick={() => {
+                                                        const current = data.work[editingTimeDate] || {};
+                                                        const breaks = (current.breaks || []).filter((_, i) => i !== bIdx);
+                                                        const updated = recalcHoursObj({ ...current, breaks });
+                                                        saveToServer({ ...data, work: { ...data.work, [editingTimeDate]: updated } });
+                                                    }}
+                                                    className="text-rose-500 hover:text-rose-700 text-xs font-black px-1.5"
+                                                >
+                                                    ✕
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Total Result */}
+                                    <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800 flex justify-between items-center">
+                                        <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300">Итого отработано:</span>
+                                        <span className="text-sm font-black text-emerald-700 dark:text-emerald-300">
+                                            {formatHours(data.work[editingTimeDate]?.hours) || '0ч 00м'} ({data.work[editingTimeDate]?.hours || 0} ч)
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => { applyWorkPreset(editingTimeDate, 'clear'); setEditingTimeDate(null); }}
+                                        className="py-2.5 px-4 bg-slate-200 dark:bg-zinc-700 hover:bg-rose-100 hover:text-rose-700 rounded-xl font-bold text-xs transition-all"
+                                    >
+                                        Очистить
+                                    </button>
+                                    <button
+                                        onClick={() => setEditingTimeDate(null)}
+                                        className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs shadow-lg transition-all"
+                                    >
+                                        Готово
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Week Templates Modal */}
+                    {templateModalWeek && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-3xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-6">
+                                <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                                            📋 Шаблоны недель
+                                        </h3>
+                                        <p className="text-xs text-slate-500 dark:text-zinc-400">
+                                            Быстрое авто-заполнение задач и рабочих часов
+                                        </p>
+                                    </div>
+                                    <button onClick={() => setTemplateModalWeek(null)} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
+                                </div>
+
+                                {/* Save current week as template */}
+                                <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-2xl border border-slate-200 dark:border-zinc-700">
+                                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-zinc-300">
+                                        💾 Сохранить эту неделю как шаблон
+                                    </h4>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            placeholder="Название (напр. Учеба: Четная неделя)..."
+                                            value={newTemplateName}
+                                            onChange={e => setNewTemplateName(e.target.value)}
+                                            className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
+                                        />
+                                        <button
+                                            onClick={() => saveCurrentWeekAsTemplate(templateModalWeek)}
+                                            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs shadow"
+                                        >
+                                            Сохранить
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Available templates */}
+                                <div className="space-y-3">
+                                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-500 dark:text-zinc-400">
+                                        Доступные шаблоны для применения
+                                    </h4>
+                                    {(data.templates || []).map(tpl => (
+                                        <div key={tpl.id} className="p-4 rounded-2xl bg-white dark:bg-zinc-700/60 border border-slate-200 dark:border-zinc-600 flex items-center justify-between gap-3 shadow-sm hover:border-blue-400 transition-all">
+                                            <div>
+                                                <h5 className="font-bold text-sm text-slate-800 dark:text-zinc-100">{tpl.name}</h5>
+                                                <p className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
+                                                    {tpl.workHours ? '⏰ Рабочие часы 5/2' : '📝 Набор задач на неделю'}
+                                                </p>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => applyTemplateToWeek(tpl, templateModalWeek)}
+                                                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs shadow transition-all"
+                                                >
+                                                    Применить
+                                                </button>
+                                                {tpl.id.startsWith('tpl-') && (
+                                                    <button
+                                                        onClick={() => deleteTemplate(tpl.id)}
+                                                        className="p-2 text-slate-400 hover:text-rose-500 text-xs font-black"
+                                                        title="Удалить шаблон"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Settings Modal */}
                     {isSettingsOpen && (
                         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
                             <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-6">
@@ -1186,7 +1630,7 @@
                                                 />
                                                 <button
                                                     onClick={handleEnableEncryption}
-                                                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-lg text-xs"
+                                                    className="px-3.5 py-2 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-xl text-xs"
                                                 >
                                                     Сменить пароль
                                                 </button>
@@ -1204,7 +1648,7 @@
                                                 />
                                                 <button
                                                     onClick={handleEnableEncryption}
-                                                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs"
+                                                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs"
                                                 >
                                                     Зашифровать
                                                 </button>
