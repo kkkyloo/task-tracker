@@ -168,7 +168,7 @@
                         const norm = normalizeData(json);
                         setData(norm);
                         localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
-                        setSyncStatus('synced');
+                        setSyncStatus('local-server');
                         return;
                     }
                 } catch (e) {}
@@ -180,31 +180,35 @@
                         const gistRes = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
                         if (gistRes.ok) {
                             const gistJson = await gistRes.json();
-                            const content = gistJson.files && gistJson.files['tasks.json'] ? gistJson.files['tasks.json'].content : null;
+                            let content = gistJson.files && gistJson.files['tasks.json'] ? gistJson.files['tasks.json'].content : null;
                             if (content) {
+                                content = content.replace(/^\uFEFF/, '');
                                 const parsed = JSON.parse(content);
                                 const norm = normalizeData(parsed);
                                 setData(norm);
                                 localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
-                                setSyncStatus('synced');
+                                setSyncStatus(githubToken ? 'cloud-synced' : 'local-cached');
                                 setSyncError('');
                                 return;
                             }
                         } else {
                             if (gistRes.status === 404) setSyncError('Gist не найден (проверьте ID)');
                             else if (gistRes.status === 401) setSyncError('Неверный GitHub токен');
+                            else if (gistRes.status === 403) setSyncError('Лимит запросов GitHub (введите токен)');
                         }
                     } catch (e) {
                         console.warn('Gist fetch error:', e);
-                        setSyncError('Сетевая ошибка при синхронизации');
+                        setSyncError('Сетевая ошибка синхронизации');
                     }
                 }
 
                 const local = localStorage.getItem('tracker_data_cache');
                 if (local) {
-                    setData(normalizeData(JSON.parse(local)));
+                    try {
+                        setData(normalizeData(JSON.parse(local)));
+                    } catch (e) {}
                 }
-                setSyncStatus(githubToken || gistId ? 'offline' : 'synced');
+                setSyncStatus(githubToken ? 'cloud-error' : 'local-only');
             }, [gistId, githubToken]);
 
             useEffect(() => {
@@ -222,7 +226,7 @@
                 if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
                 saveTimeoutRef.current = setTimeout(async () => {
-                    let savedSuccessfully = false;
+                    let localSaved = false;
 
                     try {
                         const res = await fetch('/api/data', {
@@ -231,7 +235,7 @@
                             body: JSON.stringify(newData),
                             signal: AbortSignal.timeout(2000)
                         });
-                        if (res.ok) savedSuccessfully = true;
+                        if (res.ok) localSaved = true;
                     } catch (e) {}
 
                     if (gistId && githubToken) {
@@ -253,19 +257,30 @@
                                 })
                             });
                             if (res.ok) {
-                                savedSuccessfully = true;
+                                setSyncStatus('cloud-synced');
                                 setSyncError('');
+                                return;
                             } else {
                                 const errData = await res.json();
                                 setSyncError(errData.message || 'Ошибка сохранения в Gist');
+                                setSyncStatus('cloud-error');
+                                return;
                             }
                         } catch (e) {
                             console.error('Ошибка записи в Gist:', e);
                             setSyncError('Сетевая ошибка сохранения');
+                            setSyncStatus('cloud-error');
+                            return;
                         }
                     }
 
-                    setSyncStatus(savedSuccessfully || (!githubToken && !gistId) ? 'synced' : 'error');
+                    if (localSaved) {
+                        setSyncStatus('local-server');
+                    } else if (!githubToken) {
+                        setSyncStatus('local-only');
+                    } else {
+                        setSyncStatus('cloud-error');
+                    }
                 }, 600);
             };
 
@@ -557,18 +572,38 @@
 
                         <div className="flex flex-wrap items-center gap-2">
                             <div
-                                onClick={loadData}
-                                title={syncError ? `Ошибка: ${syncError}. Нажмите для повтора.` : 'Статус синхронизации. Нажмите для обновления'}
+                                onClick={() => syncStatus.startsWith('cloud') && !syncError ? loadData() : setIsSettingsOpen(true)}
+                                title={syncError ? `Ошибка: ${syncError}. Нажмите для настройки.` : 'Статус сохранения / синхронизации. Нажмите для настройки'}
                                 className={`cursor-pointer px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                                    syncStatus === 'synced'
+                                    syncStatus === 'cloud-synced' || syncStatus === 'local-server'
                                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
                                         : syncStatus === 'saving'
                                         ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 animate-pulse'
+                                        : syncStatus === 'local-cached' || syncStatus === 'local-only'
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800'
                                         : 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800'
                                 }`}
                             >
-                                <span className={`w-2 h-2 rounded-full ${syncStatus === 'synced' ? 'bg-emerald-500' : syncStatus === 'saving' ? 'bg-amber-500' : 'bg-rose-500'}`}></span>
-                                <span>{syncStatus === 'synced' ? 'Облако: ОК' : syncStatus === 'saving' ? 'Сохранение...' : 'Оффлайн / Ошибка'}</span>
+                                <span className={`w-2 h-2 rounded-full ${
+                                    syncStatus === 'cloud-synced' || syncStatus === 'local-server'
+                                        ? 'bg-emerald-500'
+                                        : syncStatus === 'saving'
+                                        ? 'bg-amber-500'
+                                        : syncStatus === 'local-cached' || syncStatus === 'local-only'
+                                        ? 'bg-sky-500'
+                                        : 'bg-rose-500'
+                                }`}></span>
+                                <span>{
+                                    syncStatus === 'cloud-synced'
+                                        ? '☁️ Облако: ОК'
+                                        : syncStatus === 'local-server'
+                                        ? '💻 Сервер: ОК'
+                                        : syncStatus === 'saving'
+                                        ? 'Сохранение...'
+                                        : syncStatus === 'local-cached' || syncStatus === 'local-only'
+                                        ? '💾 Локально (клик для облака)'
+                                        : (syncError ? `⚠️ ${syncError}` : '⚠️ Ошибка синхронизации')
+                                }</span>
                             </div>
 
                             <button
@@ -919,17 +954,17 @@
                                         />
                                     </div>
 
-                                    <div className="flex gap-2 pt-1">
+                                    <div className="flex flex-col sm:flex-row gap-2 pt-1">
                                         <button
                                             onClick={loadData}
-                                            className="flex-1 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs"
+                                            className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs"
                                         >
                                             🔄 Проверить синхронизацию
                                         </button>
                                         <button
                                             onClick={copyMobileLink}
                                             title="Скопировать ссылку со всеми настройками для открытия на телефоне"
-                                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs"
+                                            className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs"
                                         >
                                             {copySuccess ? '✓ Скопировано!' : '📱 Ссылка для телефона'}
                                         </button>
