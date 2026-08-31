@@ -33,7 +33,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "2.5.0";
+        const APP_VERSION = "2.6.0";
 
         const forceRefreshCache = () => {
             if ('caches' in window) {
@@ -70,6 +70,117 @@
             'семинар': 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800',
             'экзамен': 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800',
             'зачет': 'bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-950/50 dark:text-orange-300 dark:border-orange-800'
+        };
+
+        const parseScheduleText = (rawText) => {
+            const lines = (rawText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const parsedByDate = {};
+            let currentDate = null;
+
+            const dateRegex = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/;
+            const timeRegex = /^(\d{1,2}:\d{2})\s*(?:—|-|до|\s)\s*(\d{1,2}:\d{2})$/;
+
+            let currentItem = null;
+
+            function flushItem() {
+                if (currentDate && currentItem && currentItem.subject) {
+                    if (!parsedByDate[currentDate]) parsedByDate[currentDate] = [];
+                    const dayList = parsedByDate[currentDate];
+                    currentItem.pairNum = dayList.length + 1;
+                    dayList.push(currentItem);
+                }
+                currentItem = null;
+            }
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+
+                // 1. Check Date: e.g. 01.09.2026 or 1.9.2026
+                const dateMatch = line.match(dateRegex);
+                if (dateMatch) {
+                    flushItem();
+                    const [_, d, m, y] = dateMatch;
+                    currentDate = `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+                    continue;
+                }
+
+                // 2. Check Day of Week
+                if (/^(понедельник|вторник|среда|четверг|пятница|суббота|воскресенье)$/i.test(line)) {
+                    flushItem();
+                    continue;
+                }
+
+                // 3. Check Time: e.g. 16:00 17:35 or 16:00 - 17:35
+                const timeMatch = line.match(timeRegex);
+                if (timeMatch) {
+                    flushItem();
+                    currentItem = {
+                        id: Date.now() + Math.floor(Math.random() * 100000) + i,
+                        time: `${timeMatch[1]} — ${timeMatch[2]}`,
+                        subject: '',
+                        room: '',
+                        teacher: '',
+                        type: 'лекция'
+                    };
+                    continue;
+                }
+
+                if (currentItem) {
+                    // Check lesson number e.g. "5-е занятие"
+                    if (/^\d+-е\s+занятие$/i.test(line)) {
+                        continue;
+                    }
+
+                    // Check teacher & room line:
+                    const isTeacherOrRoom = /(?:Аудитория|Ауд\.?|Кабинет|Каб\.?):/i.test(line) ||
+                        /^(?:ст\.?\s*пр\.?|доц\.?|проф\.?|зав\.?\s*к\.?|преп\.?|асс\.?)/i.test(line) ||
+                        /@/i.test(line);
+
+                    if (isTeacherOrRoom) {
+                        let teacherLine = line;
+
+                        // Extract room:
+                        const roomMatch = teacherLine.match(/(?:Аудитория|Ауд\.?|Кабинет|Каб\.?):\s*([^\n\r]+)/i);
+                        if (roomMatch) {
+                            currentItem.room = roomMatch[1].trim();
+                            teacherLine = teacherLine.replace(roomMatch[0], '').trim();
+                        }
+
+                        // Remove email / mailto markdown
+                        teacherLine = teacherLine.replace(/\(\s*\[?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\]?(?:\([^)]*\))?\s*\)/gi, '').trim();
+                        teacherLine = teacherLine.replace(/\[?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\]?(?:\([^)]*\))?/gi, '').trim();
+
+                        teacherLine = teacherLine.replace(/[,;]+$/, '').trim();
+                        if (teacherLine) {
+                            currentItem.teacher = teacherLine;
+                        }
+                        continue;
+                    }
+
+                    // Check type + subject:
+                    const typeMatch = line.match(/^(лаб\.?|лек\.?|пр\.?|сем\.?|экз\.?|зач\.?|дифф\.?\s*зач\.?)\s+(.+)$/i);
+                    if (typeMatch) {
+                        const prefix = typeMatch[1].toLowerCase().replace('.', '');
+                        if (prefix.startsWith('лаб')) currentItem.type = 'лабораторная';
+                        else if (prefix.startsWith('лек')) currentItem.type = 'лекция';
+                        else if (prefix.startsWith('пр')) currentItem.type = 'практика';
+                        else if (prefix.startsWith('сем')) currentItem.type = 'семинар';
+                        else if (prefix.startsWith('экз')) currentItem.type = 'экзамен';
+                        else if (prefix.startsWith('зач') || prefix.startsWith('дифф')) currentItem.type = 'зачет';
+
+                        currentItem.subject = typeMatch[2].trim();
+                        continue;
+                    }
+
+                    // If subject not set yet, take line as subject
+                    if (!currentItem.subject) {
+                        currentItem.subject = line;
+                    }
+                }
+            }
+            flushItem();
+
+            return parsedByDate;
         };
 
         const formatTimeInput = (raw) => {
@@ -197,7 +308,13 @@
 
             // Classes (Пары) State
             const [editingClassDate, setEditingClassDate] = useState(null);
-            const [classForm, setClassForm] = useState({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', type: 'лекция' });
+            const [classForm, setClassForm] = useState({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', teacher: '', type: 'лекция' });
+
+            // Schedule Text Parser State
+            const [isParserOpen, setIsParserOpen] = useState(false);
+            const [parserRawText, setParserRawText] = useState('');
+            const [parsedPreview, setParsedPreview] = useState(null);
+            const [parserMergeMode, setParserMergeMode] = useState('replace'); // 'replace' | 'merge'
 
             // Quick Time Popover & Template Modals
             const [editingTimeDate, setEditingTimeDate] = useState(null);
@@ -613,13 +730,22 @@
                     time: defaultPairTimes[pairNum] || '08:30 — 10:00',
                     subject: '',
                     room: '',
+                    teacher: '',
                     type: 'лекция'
                 });
                 setEditingClassDate(date);
             };
 
             const openEditClass = (date, cls) => {
-                setClassForm({ ...cls });
+                setClassForm({
+                    id: cls.id,
+                    pairNum: cls.pairNum || 1,
+                    time: cls.time || '08:30 — 10:00',
+                    subject: cls.subject || '',
+                    room: cls.room || '',
+                    teacher: cls.teacher || '',
+                    type: cls.type || 'лекция'
+                });
                 setEditingClassDate(date);
             };
 
@@ -637,6 +763,7 @@
                     time: classForm.time || defaultPairTimes[classForm.pairNum] || '08:30 — 10:00',
                     subject: classForm.subject.trim(),
                     room: (classForm.room || '').trim(),
+                    teacher: (classForm.teacher || '').trim(),
                     type: classForm.type || 'лекция'
                 };
                 let updated;
@@ -648,7 +775,7 @@
                 updated.sort((a, b) => a.pairNum - b.pairNum || a.id - b.id);
                 saveToServer({ ...data, classes: { ...(data.classes || {}), [date]: updated } });
                 setEditingClassDate(null);
-                setClassForm({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', type: 'лекция' });
+                setClassForm({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', teacher: '', type: 'лекция' });
             };
 
             const deleteClass = (date, classId) => {
@@ -666,6 +793,38 @@
                     });
                     saveToServer({ ...data, classes: nextClasses });
                 }
+            };
+
+            const handleRunParser = () => {
+                if (!parserRawText.trim()) {
+                    alert('Пожалуйста, вставьте текст расписания');
+                    return;
+                }
+                const result = parseScheduleText(parserRawText);
+                const totalPairs = Object.values(result).reduce((acc, list) => acc + list.length, 0);
+                if (totalPairs === 0) {
+                    alert('Не удалось найти пары в тексте. Убедитесь, что скопированы даты (напр. 01.09.2026) и время занятий.');
+                    return;
+                }
+                setParsedPreview(result);
+            };
+
+            const applyParsedSchedule = () => {
+                if (!parsedPreview) return;
+                const updatedClasses = { ...(data.classes || {}) };
+                Object.entries(parsedPreview).forEach(([dateKey, pairList]) => {
+                    if (parserMergeMode === 'replace') {
+                        updatedClasses[dateKey] = pairList;
+                    } else {
+                        const existing = updatedClasses[dateKey] || [];
+                        updatedClasses[dateKey] = [...existing, ...pairList];
+                    }
+                });
+                saveToServer({ ...data, classes: updatedClasses });
+                setIsParserOpen(false);
+                setParserRawText('');
+                setParsedPreview(null);
+                alert('✅ Расписание успешно заполнено и сохранено!');
             };
 
             const addTask = (date) => {
@@ -1091,6 +1250,17 @@
                                 }</span>
                             </div>
 
+                            {viewMode === 'study' && (
+                                <button
+                                    onClick={() => setIsParserOpen(true)}
+                                    title="Импорт и умный парсинг расписания пар из текста вуза"
+                                    className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-black text-xs shadow-md transition-all flex items-center gap-1.5 active:scale-95"
+                                >
+                                    <span>📥</span>
+                                    <span>Парсер пар</span>
+                                </button>
+                            )}
+
                             <button
                                 onClick={scrollToToday}
                                 title="Перейти к сегодняшнему дню"
@@ -1272,13 +1442,20 @@
                                                     </div>
                                                 </>
                                             ) : (
-                                                <div className="flex items-center gap-2">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <button
+                                                        onClick={() => setIsParserOpen(true)}
+                                                        title="Импорт и авто-парсинг расписания пар из текста"
+                                                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm"
+                                                    >
+                                                        <span>📥 Парсер</span>
+                                                    </button>
                                                     <button
                                                         onClick={() => setTemplateModalWeek(week)}
                                                         title="Применить или сохранить расписание пар и задач для этой недели"
-                                                        className="px-3.5 py-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1.5 shadow-sm"
+                                                        className="px-3 py-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm"
                                                     >
-                                                        <span>📋 Шаблоны пар и ДЗ</span>
+                                                        <span>📋 Шаблоны пар</span>
                                                     </button>
                                                     <button
                                                         onClick={() => clearWeekClasses(week)}
@@ -1390,11 +1567,18 @@
                                                                                     <div className="font-bold text-xs text-slate-800 dark:text-zinc-100 mt-1 truncate" title={cls.subject}>
                                                                                         {cls.subject}
                                                                                     </div>
-                                                                                    {cls.room && (
-                                                                                        <div className="text-[10px] text-slate-500 dark:text-zinc-400 flex items-center gap-1 mt-0.5 font-medium">
-                                                                                            <span>📍</span> <span>{cls.room}</span>
-                                                                                        </div>
-                                                                                    )}
+                                                                                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                                                                        {cls.room && (
+                                                                                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 flex items-center gap-1 font-medium">
+                                                                                                <span>📍</span> <span>{cls.room}</span>
+                                                                                            </div>
+                                                                                        )}
+                                                                                        {cls.teacher && (
+                                                                                            <div className="text-[10px] text-slate-500 dark:text-zinc-400 flex items-center gap-1 font-medium truncate max-w-[170px]" title={cls.teacher}>
+                                                                                                <span>👤</span> <span>{cls.teacher}</span>
+                                                                                            </div>
+                                                                                        )}
+                                                                                    </div>
                                                                                 </div>
                                                                                 <button
                                                                                     onClick={(e) => { e.stopPropagation(); deleteClass(dateStr, cls.id); }}
@@ -1691,12 +1875,24 @@
                                             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1">Аудитория / Кабинет</label>
                                             <input
                                                 type="text"
-                                                placeholder="ауд. 302 / Лаб. 4"
+                                                placeholder="ауд. 1-290 / Лаб. 4"
                                                 value={classForm.room}
                                                 onChange={e => setClassForm(prev => ({ ...prev, room: e.target.value }))}
                                                 className="w-full text-xs font-semibold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
                                             />
                                         </div>
+                                    </div>
+
+                                    {/* Teacher */}
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1">Преподаватель</label>
+                                        <input
+                                            type="text"
+                                            placeholder="ст.пр. Донской Д.Ю. / доц. Медведева Т.А."
+                                            value={classForm.teacher || ''}
+                                            onChange={e => setClassForm(prev => ({ ...prev, teacher: e.target.value }))}
+                                            className="w-full text-xs font-semibold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500 shadow-sm"
+                                        />
                                     </div>
 
                                     {/* Class Type */}
@@ -1736,6 +1932,140 @@
                                     >
                                         {classForm.id ? 'Сохранить изменения' : '➕ Добавить пару'}
                                     </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Schedule Text Parser Modal */}
+                    {isParserOpen && (
+                        <div className="fixed inset-0 bg-slate-900/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 z-[95]">
+                            <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-5 sm:p-6 rounded-3xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto space-y-5">
+                                <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
+                                    <div>
+                                        <h3 className="text-lg font-black text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                                            <span>📥</span> <span>Умный парсер расписания пар</span>
+                                        </h3>
+                                        <p className="text-xs text-slate-500 dark:text-zinc-400">
+                                            Вставьте скопированный текст из личного кабинета вуза (ДГТУ и др.)
+                                        </p>
+                                    </div>
+                                    <button onClick={() => { setIsParserOpen(false); setParsedPreview(null); }} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <div>
+                                        <div className="flex justify-between items-center mb-1">
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400">
+                                                Текст расписания (с датами, временем, предметами и аудиториями)
+                                            </label>
+                                            {parserRawText && (
+                                                <button
+                                                    onClick={() => { setParserRawText(''); setParsedPreview(null); }}
+                                                    className="text-[10px] text-rose-500 hover:underline font-bold"
+                                                >
+                                                    Очистить поле
+                                                </button>
+                                            )}
+                                        </div>
+                                        <textarea
+                                            rows={8}
+                                            value={parserRawText}
+                                            onChange={e => setParserRawText(e.target.value)}
+                                            placeholder="Вставьте сюда текст вида:&#10;Вторник&#10;01.09.2026&#10;16:00 17:35&#10;лаб Программное и аппаратное обеспечение...&#10;ст.пр.Донской Д.Ю. ([email]) Аудитория: 1-290&#10;..."
+                                            className="w-full text-xs font-mono bg-slate-50 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-2xl p-3.5 outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-500/20 shadow-inner"
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-bold text-slate-600 dark:text-zinc-300">Режим:</span>
+                                            <div className="flex bg-slate-100 dark:bg-zinc-700 p-1 rounded-xl border border-slate-200 dark:border-zinc-600 text-xs">
+                                                <button
+                                                    onClick={() => setParserMergeMode('replace')}
+                                                    className={`px-3 py-1 rounded-lg font-bold transition-all ${parserMergeMode === 'replace' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-600 dark:text-zinc-300'}`}
+                                                >
+                                                    🔄 Перезаписать даты
+                                                </button>
+                                                <button
+                                                    onClick={() => setParserMergeMode('merge')}
+                                                    className={`px-3 py-1 rounded-lg font-bold transition-all ${parserMergeMode === 'merge' ? 'bg-purple-600 text-white shadow-sm' : 'text-slate-600 dark:text-zinc-300'}`}
+                                                >
+                                                    ➕ Добавить к текущим
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={handleRunParser}
+                                            className="px-5 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-black rounded-xl text-xs shadow-md transition-all flex items-center gap-1.5 active:scale-95"
+                                        >
+                                            <span>🔍 Распознать расписание</span>
+                                        </button>
+                                    </div>
+
+                                    {/* Parsed Preview Section */}
+                                    {parsedPreview && (
+                                        <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-zinc-700">
+                                            <div className="flex justify-between items-center">
+                                                <h4 className="font-black text-xs uppercase tracking-wider text-purple-700 dark:text-purple-300 flex items-center gap-1.5">
+                                                    <span>✨ Распознано:</span>
+                                                    <span>{Object.keys(parsedPreview).length} дней / {Object.values(parsedPreview).reduce((a, b) => a + b.length, 0)} пар</span>
+                                                </h4>
+                                            </div>
+
+                                            <div className="max-h-[280px] overflow-y-auto space-y-2.5 pr-1">
+                                                {Object.entries(parsedPreview).map(([dateKey, pairList]) => {
+                                                    const dt = new Date(dateKey);
+                                                    return (
+                                                        <div key={dateKey} className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-700/50 border border-slate-200 dark:border-zinc-600/70 space-y-2">
+                                                            <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-600 pb-1.5">
+                                                                <span className="font-black text-xs text-slate-800 dark:text-zinc-100 flex items-center gap-1.5">
+                                                                    <span>📅 {fullDows[dt.getDay()]}, {dt.getDate()} {fullMonths[dt.getMonth()]} ({dateKey})</span>
+                                                                </span>
+                                                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-950/70 dark:text-purple-300">
+                                                                    {pairList.length} пар
+                                                                </span>
+                                                            </div>
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                {pairList.map((p, idx) => (
+                                                                    <div key={idx} className="p-2 bg-white dark:bg-zinc-800 rounded-xl border border-slate-200 dark:border-zinc-700 shadow-sm space-y-1">
+                                                                        <div className="flex items-center gap-1.5 flex-wrap">
+                                                                            <span className="px-1.5 py-0.2 rounded-md bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-200 font-bold text-[9px]">
+                                                                                {p.pairNum} пара
+                                                                            </span>
+                                                                            <span className="font-mono text-[10px] font-bold text-slate-500 dark:text-zinc-400">
+                                                                                {p.time}
+                                                                            </span>
+                                                                            <span className={`px-1.5 py-0.2 rounded-md text-[9px] font-bold border ${classTypeBadges[p.type] || classTypeBadges['лекция']}`}>
+                                                                                {p.type}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="font-bold text-xs text-slate-800 dark:text-zinc-100 truncate" title={p.subject}>
+                                                                            {p.subject}
+                                                                        </div>
+                                                                        <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-zinc-400 flex-wrap">
+                                                                            {p.room && <span>📍 {p.room}</span>}
+                                                                            {p.teacher && <span className="truncate max-w-[180px]" title={p.teacher}>👤 {p.teacher}</span>}
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+
+                                            <div className="pt-2">
+                                                <button
+                                                    onClick={applyParsedSchedule}
+                                                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center gap-2 active:scale-95"
+                                                >
+                                                    <span>🚀 Заполнить расписание в трекере</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
