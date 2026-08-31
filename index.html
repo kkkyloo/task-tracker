@@ -150,7 +150,7 @@
             const [data, setData] = useState({ tasks: [], work: {}, templates: [] });
             const [isEncrypted, setIsEncrypted] = useState(false);
             const [pendingContainer, setPendingContainer] = useState(null);
-            const [masterPassword, setMasterPassword] = useState(() => sessionStorage.getItem('tracker_master_pass') || '');
+            const [masterPassword, setMasterPassword] = useState(() => localStorage.getItem('tracker_master_pass') || sessionStorage.getItem('tracker_master_pass') || '');
             const [isLocked, setIsLocked] = useState(false);
             const [pinInput, setPinInput] = useState('');
             const [pinError, setPinError] = useState(false);
@@ -221,6 +221,7 @@
                         }
                         if (payload.pass) {
                             setMasterPassword(payload.pass);
+                            localStorage.setItem('tracker_master_pass', payload.pass);
                             sessionStorage.setItem('tracker_master_pass', payload.pass);
                         }
                         window.history.replaceState(null, '', window.location.pathname);
@@ -498,6 +499,7 @@
                     try {
                         const dec = await decryptData(pendingContainer, pinInput);
                         setMasterPassword(pinInput);
+                        localStorage.setItem('tracker_master_pass', pinInput);
                         sessionStorage.setItem('tracker_master_pass', pinInput);
                         setData(normalizeData(dec));
                         setIsLocked(false);
@@ -518,6 +520,7 @@
                 try {
                     setIsEncrypted(true);
                     setMasterPassword(pass);
+                    localStorage.setItem('tracker_master_pass', pass);
                     sessionStorage.setItem('tracker_master_pass', pass);
                     saveToServer(data, pass);
                     setNewPassInput('');
@@ -531,6 +534,7 @@
                 if (confirm('Отключить сквозное шифрование? Задачи будут сохранены в открытом виде.')) {
                     setIsEncrypted(false);
                     setMasterPassword('');
+                    localStorage.removeItem('tracker_master_pass');
                     sessionStorage.removeItem('tracker_master_pass');
                     saveToServer(data, '');
                     alert('🔓 Шифрование отключено.');
@@ -539,6 +543,7 @@
 
             const handleLockNow = () => {
                 setMasterPassword('');
+                localStorage.removeItem('tracker_master_pass');
                 sessionStorage.removeItem('tracker_master_pass');
                 setIsLocked(true);
                 setData({ tasks: [], work: {} });
@@ -1764,15 +1769,16 @@
                                         </button>
                                         <button
                                             onClick={() => {
-                                                if (confirm('Сбросить локальные настройки (токены, пароли) на этом устройстве? (Данные в облаке Gist останутся нетронутыми)')) {
-                                                    localStorage.clear();
-                                                    sessionStorage.clear();
+                                                if (confirm('Сбросить сохраненный пароль и локальный кеш на этом устройстве? (Задачи в облаке Gist не удалятся)')) {
+                                                    localStorage.removeItem('tracker_master_pass');
+                                                    sessionStorage.removeItem('tracker_master_pass');
+                                                    localStorage.removeItem('tracker_data_cache');
                                                     forceRefreshCache();
                                                 }
                                             }}
                                             className="py-2.5 px-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-100 font-bold rounded-xl text-xs"
                                         >
-                                            🗑️ Сбросить всё
+                                            🔒 Сбросить пароль устройства
                                         </button>
                                     </div>
                                 </div>
