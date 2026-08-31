@@ -21,24 +21,110 @@
             darkMode: 'class',
             theme: {
                 extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'],
-                        roboto: ['Roboto', 'sans-serif'],
-                        jakarta: ['"Plus Jakarta Sans"', 'sans-serif'],
-                        mono: ['"JetBrains Mono"', 'monospace']
-                    },
                     borderRadius: { xl: '12px', lg: '8px' }
                 }
             }
         };
     </script>
+    <style>
+        /* Font Family Definitions */
+        :root[data-font="roboto"], :root[data-font="roboto"] body, :root[data-font="roboto"] * {
+            font-family: 'Roboto', sans-serif !important;
+        }
+        :root[data-font="rounded"], :root[data-font="rounded"] body, :root[data-font="rounded"] * {
+            font-family: 'Plus Jakarta Sans', 'Outfit', sans-serif !important;
+        }
+        :root[data-font="mono"], :root[data-font="mono"] body, :root[data-font="mono"] * {
+            font-family: 'JetBrains Mono', monospace !important;
+        }
+        :root[data-font="inter"], :root[data-font="inter"] body, :root[data-font="inter"] * {
+            font-family: 'Inter', sans-serif !important;
+        }
+
+        /* Material You Dynamic Themes */
+        :root, :root[data-theme="iris"] {
+            --theme-primary: #8b5cf6;
+            --theme-primary-hover: #7c3aed;
+            --theme-primary-ring: rgba(139, 92, 246, 0.4);
+            --theme-primary-bg: rgba(139, 92, 246, 0.15);
+            --theme-primary-border: rgba(139, 92, 246, 0.4);
+            --theme-primary-text: #8b5cf6;
+            --theme-gradient: linear-gradient(135deg, #8b5cf6, #6366f1);
+        }
+
+        :root[data-theme="sky"] {
+            --theme-primary: #0284c7;
+            --theme-primary-hover: #0369a1;
+            --theme-primary-ring: rgba(2, 132, 199, 0.4);
+            --theme-primary-bg: rgba(2, 132, 199, 0.15);
+            --theme-primary-border: rgba(2, 132, 199, 0.4);
+            --theme-primary-text: #0284c7;
+            --theme-gradient: linear-gradient(135deg, #0284c7, #2563eb);
+        }
+
+        :root[data-theme="emerald"] {
+            --theme-primary: #059669;
+            --theme-primary-hover: #047857;
+            --theme-primary-ring: rgba(5, 150, 105, 0.4);
+            --theme-primary-bg: rgba(5, 150, 105, 0.15);
+            --theme-primary-border: rgba(5, 150, 105, 0.4);
+            --theme-primary-text: #059669;
+            --theme-gradient: linear-gradient(135deg, #059669, #0d9488);
+        }
+
+        :root[data-theme="sunset"] {
+            --theme-primary: #ea580c;
+            --theme-primary-hover: #c2410c;
+            --theme-primary-ring: rgba(234, 88, 12, 0.4);
+            --theme-primary-bg: rgba(234, 88, 12, 0.15);
+            --theme-primary-border: rgba(234, 88, 12, 0.4);
+            --theme-primary-text: #ea580c;
+            --theme-gradient: linear-gradient(135deg, #ea580c, #e11d48);
+        }
+
+        :root[data-theme="slate"] {
+            --theme-primary: #64748b;
+            --theme-primary-hover: #475569;
+            --theme-primary-ring: rgba(100, 116, 139, 0.4);
+            --theme-primary-bg: rgba(100, 116, 139, 0.15);
+            --theme-primary-border: rgba(100, 116, 139, 0.4);
+            --theme-primary-text: #64748b;
+            --theme-gradient: linear-gradient(135deg, #64748b, #334155);
+        }
+
+        .theme-bg-primary {
+            background-color: var(--theme-primary) !important;
+            color: #ffffff !important;
+        }
+        .theme-bg-primary:hover {
+            background-color: var(--theme-primary-hover) !important;
+        }
+        .theme-bg-gradient {
+            background: var(--theme-gradient) !important;
+            color: #ffffff !important;
+        }
+        .theme-border-primary {
+            border-color: var(--theme-primary) !important;
+        }
+        .theme-text-primary {
+            color: var(--theme-primary) !important;
+        }
+        .theme-ring-primary {
+            --tw-ring-color: var(--theme-primary-ring) !important;
+        }
+        .theme-light-bg {
+            background-color: var(--theme-primary-bg) !important;
+            color: var(--theme-primary-text) !important;
+            border-color: var(--theme-primary-border) !important;
+        }
+    </style>
 </head>
 <body class="bg-slate-100 dark:bg-zinc-950 text-slate-900 dark:text-zinc-100 min-h-screen transition-colors duration-300 pb-24 font-sans antialiased selection:bg-blue-500 selection:text-white">
     <div id="root"></div>
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "3.0.0";
+        const APP_VERSION = "3.1.0";
 
         const forceRefreshCache = () => {
             if ('caches' in window) {
@@ -403,6 +489,13 @@
             const [colorTheme, setColorTheme] = useState(() => localStorage.getItem('tracker_color_theme') || 'iris');
             const [cardDensity, setCardDensity] = useState(() => localStorage.getItem('tracker_density') || 'compact');
             const [fontTheme, setFontTheme] = useState(() => localStorage.getItem('tracker_font') || 'inter');
+
+            useEffect(() => {
+                document.documentElement.setAttribute('data-theme', colorTheme);
+                document.documentElement.setAttribute('data-font', fontTheme);
+                document.body.setAttribute('data-theme', colorTheme);
+                document.body.setAttribute('data-font', fontTheme);
+            }, [colorTheme, fontTheme]);
 
             // Escape key listener to close any open modal
             useEffect(() => {
@@ -1364,7 +1457,7 @@
                                     onClick={() => { setViewMode('study'); localStorage.setItem('viewMode', 'study'); }}
                                     className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
                                         viewMode === 'study'
-                                            ? 'bg-sky-600 text-white shadow-sm scale-100'
+                                            ? 'theme-bg-primary shadow-md scale-100'
                                             : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
                                     }`}
                                 >
@@ -1375,7 +1468,7 @@
                                     onClick={() => { setViewMode('work'); localStorage.setItem('viewMode', 'work'); }}
                                     className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
                                         viewMode === 'work'
-                                            ? 'bg-emerald-600 text-white shadow-sm scale-100'
+                                            ? 'theme-bg-primary shadow-md scale-100'
                                             : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
                                     }`}
                                 >
@@ -1553,9 +1646,7 @@
                                     {/* Week Header Bar */}
                                     <div className={`flex flex-col lg:flex-row justify-between items-start lg:items-center rounded-3xl p-3.5 sm:p-4 mb-4 shadow-sm border transition-all gap-3 ${
                                         isWeekCurrent(week)
-                                            ? (viewMode === 'work'
-                                                ? 'bg-slate-900 dark:bg-zinc-900 border-emerald-500/50 shadow-emerald-500/5 ring-1 ring-emerald-500/30 text-white'
-                                                : 'bg-slate-900 dark:bg-zinc-900 border-sky-500/50 shadow-sky-500/5 ring-1 ring-sky-500/30 text-white')
+                                            ? 'bg-slate-900 dark:bg-zinc-900 theme-border-primary shadow-md ring-1 theme-ring-primary text-white'
                                             : 'bg-white dark:bg-zinc-900/90 border-slate-200/90 dark:border-zinc-800 text-slate-800 dark:text-zinc-200'
                                     }`}>
                                         <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
@@ -1649,7 +1740,7 @@
                                                     <button
                                                         onClick={() => setIsParserOpen(true)}
                                                         title="Импорт и умный парсинг расписания пар из текста"
-                                                        className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white rounded-xl font-black text-xs transition-all flex items-center gap-1.5 shadow-sm"
+                                                        className="px-3.5 py-1.5 theme-bg-primary active:scale-95 text-white rounded-xl font-black text-xs transition-all flex items-center gap-1.5 shadow-sm"
                                                     >
                                                         <span>📥 Парсер</span>
                                                     </button>
@@ -1704,9 +1795,7 @@
                                                         onDrop={e => onDropOnDay(e, dateStr)}
                                                         className={`flex flex-col justify-between bg-white dark:bg-zinc-900 rounded-3xl shadow-sm border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md h-full min-h-[480px] ${
                                                             isToday
-                                                                ? (viewMode === 'work'
-                                                                    ? 'border-emerald-500 ring-2 ring-emerald-500/30 dark:border-emerald-400 dark:ring-emerald-400/40 shadow-lg'
-                                                                    : 'border-blue-500 ring-2 ring-blue-500/30 dark:border-sky-400 dark:ring-sky-400/40 shadow-lg')
+                                                                ? 'theme-border-primary ring-2 theme-ring-primary shadow-lg'
                                                                 : 'border-slate-200/90 dark:border-zinc-800 hover:border-slate-300 dark:hover:border-zinc-700'
                                                         }`}
                                                     >
@@ -1715,7 +1804,7 @@
                                                             {/* Day Header */}
                                                             <div className={`p-3 border-b rounded-t-3xl flex justify-between items-center transition-colors ${
                                                                 isToday
-                                                                    ? (viewMode === 'work' ? 'bg-emerald-600 text-white' : 'bg-blue-600 dark:bg-sky-600 text-white')
+                                                                    ? 'theme-bg-primary text-white'
                                                                     : isWeekend
                                                                     ? 'bg-slate-50 dark:bg-zinc-800/60 border-slate-200/90 dark:border-zinc-700/80 text-slate-600 dark:text-zinc-400'
                                                                     : 'bg-slate-50/80 dark:bg-zinc-800/90 border-slate-200/90 dark:border-zinc-700/80 text-slate-800 dark:text-zinc-200'
@@ -2030,7 +2119,7 @@
                                                                 </button>
                                                                 <button
                                                                     onClick={() => addTask(dateStr)}
-                                                                    className={`w-8 h-8 rounded-xl text-white font-black text-sm shadow-md transition-transform active:scale-95 ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                                                    className="w-8 h-8 rounded-xl theme-bg-primary font-black text-sm shadow-md transition-transform active:scale-95 flex items-center justify-center"
                                                                 >
                                                                     +
                                                                 </button>
