@@ -33,7 +33,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "2.8.0";
+        const APP_VERSION = "2.9.0";
 
         const forceRefreshCache = () => {
             if ('caches' in window) {
@@ -182,29 +182,97 @@
             return parsedByDate;
         };
 
-        const formatTimeInput = (raw) => {
-            const digits = (raw || '').replace(/\D/g, '').slice(0, 4);
-            if (digits.length <= 2) return digits;
-            return digits.slice(0, 2) + ':' + digits.slice(2);
+        const smartNormalizeTime = (raw) => {
+            if (!raw) return '';
+            let val = String(raw).trim().replace(/[.,/ -]+/g, ':');
+            
+            const digitsOnly = val.replace(/\D/g, '');
+            if (!digitsOnly) return '';
+            
+            let hours = 0;
+            let minutes = 0;
+            
+            if (val.includes(':')) {
+                const parts = val.split(':').filter(p => p.length > 0);
+                if (parts.length >= 2) {
+                    hours = parseInt(parts[0], 10) || 0;
+                    minutes = parseInt(parts[1].slice(0, 2), 10) || 0;
+                } else if (parts.length === 1) {
+                    hours = parseInt(parts[0], 10) || 0;
+                    minutes = 0;
+                }
+            } else if (digitsOnly.length === 1 || digitsOnly.length === 2) {
+                hours = parseInt(digitsOnly, 10) || 0;
+                minutes = 0;
+            } else if (digitsOnly.length === 3) {
+                hours = parseInt(digitsOnly.slice(0, 1), 10) || 0;
+                minutes = parseInt(digitsOnly.slice(1), 10) || 0;
+            } else if (digitsOnly.length >= 4) {
+                hours = parseInt(digitsOnly.slice(0, 2), 10) || 0;
+                minutes = parseInt(digitsOnly.slice(2, 4), 10) || 0;
+            }
+
+            // Validation & Clamping (00 - 23h, 00 - 59m)
+            if (hours === 24) {
+                hours = 0;
+            } else if (hours > 23) {
+                hours = 23;
+            } else if (hours < 0) {
+                hours = 0;
+            }
+
+            if (minutes > 59) {
+                minutes = 59;
+            } else if (minutes < 0) {
+                minutes = 0;
+            }
+
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
         };
 
         const TimeInput = ({ value, onChange, className, placeholder = "--:--" }) => {
-            const handleKey = (e) => {
-                if (e.key === 'Backspace' && value && value.endsWith(':')) {
-                    e.preventDefault();
-                    onChange(value.slice(0, -1));
+            const [localVal, setLocalVal] = useState(value || '');
+
+            useEffect(() => {
+                setLocalVal(value || '');
+            }, [value]);
+
+            const handleBlur = () => {
+                if (localVal && localVal.trim()) {
+                    const normalized = smartNormalizeTime(localVal);
+                    setLocalVal(normalized);
+                    onChange(normalized);
+                } else {
+                    onChange('');
                 }
             };
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                }
+            };
+
             return (
                 <input
                     type="text"
                     inputMode="numeric"
-                    maxLength={5}
                     placeholder={placeholder}
                     className={className}
-                    value={value || ''}
-                    onKeyDown={handleKey}
-                    onChange={e => onChange(formatTimeInput(e.target.value))}
+                    value={localVal}
+                    onKeyDown={handleKeyDown}
+                    onChange={e => {
+                        setLocalVal(e.target.value);
+                        const digits = e.target.value.replace(/\D/g, '');
+                        if (digits.length === 4) {
+                            const normalized = smartNormalizeTime(e.target.value);
+                            setLocalVal(normalized);
+                            onChange(normalized);
+                        } else {
+                            onChange(e.target.value);
+                        }
+                    }}
+                    onBlur={handleBlur}
                 />
             );
         };
@@ -1598,7 +1666,7 @@
                                                         id={`day-${dateStr}`}
                                                         onDragOver={e => e.preventDefault()}
                                                         onDrop={e => onDropOnDay(e, dateStr)}
-                                                        className={`flex flex-col bg-white dark:bg-zinc-850 rounded-3xl shadow-sm border transition-all min-h-[480px] ${
+                                                        className={`flex flex-col bg-white dark:bg-zinc-900 rounded-3xl shadow-sm border transition-all min-h-[480px] ${
                                                             isToday
                                                                 ? (viewMode === 'work'
                                                                     ? 'border-emerald-500 ring-2 ring-emerald-500/30 dark:border-emerald-400 dark:ring-emerald-400/40 shadow-lg'
@@ -1983,6 +2051,19 @@
                                                 placeholder="08:30 — 10:00"
                                                 value={classForm.time}
                                                 onChange={e => setClassForm(prev => ({ ...prev, time: e.target.value }))}
+                                                onBlur={e => {
+                                                    const val = e.target.value.trim();
+                                                    if (val) {
+                                                        const match = val.match(/^([0-9:.]+)\s*(?:—|-|до|\s)\s*([0-9:.]+)$/);
+                                                        if (match) {
+                                                            const startNorm = smartNormalizeTime(match[1]);
+                                                            const endNorm = smartNormalizeTime(match[2]);
+                                                            if (startNorm && endNorm) {
+                                                                setClassForm(prev => ({ ...prev, time: `${startNorm} — ${endNorm}` }));
+                                                            }
+                                                        }
+                                                    }
+                                                }}
                                                 className="w-full text-xs font-mono font-bold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
                                             />
                                         </div>
