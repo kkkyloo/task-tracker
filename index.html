@@ -66,15 +66,75 @@
 
         const DEFAULT_GIST_ID = 'e66de7295cfcb3a815f2530ae3a21e04';
 
+        // Web Crypto AES-256-GCM + PBKDF2 Helpers
+        async function deriveKey(password, salt) {
+            const enc = new TextEncoder();
+            const keyMaterial = await window.crypto.subtle.importKey(
+                'raw',
+                enc.encode(password),
+                'PBKDF2',
+                false,
+                ['deriveKey']
+            );
+            return window.crypto.subtle.deriveKey(
+                {
+                    name: 'PBKDF2',
+                    salt: salt,
+                    iterations: 100000,
+                    hash: 'SHA-256'
+                },
+                keyMaterial,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt', 'decrypt']
+            );
+        }
+
+        async function encryptData(dataObj, password) {
+            const enc = new TextEncoder();
+            const plaintext = enc.encode(JSON.stringify(dataObj));
+            const salt = window.crypto.getRandomValues(new Uint8Array(16));
+            const iv = window.crypto.getRandomValues(new Uint8Array(12));
+            const key = await deriveKey(password, salt);
+            const ciphertext = await window.crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                plaintext
+            );
+            const toB64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+            return {
+                encrypted: true,
+                version: 2,
+                salt: toB64(salt),
+                iv: toB64(iv),
+                ciphertext: toB64(ciphertext)
+            };
+        }
+
+        async function decryptData(encryptedObj, password) {
+            const fromB64 = (str) => Uint8Array.from(atob(str), c => c.charCodeAt(0));
+            const salt = fromB64(encryptedObj.salt);
+            const iv = fromB64(encryptedObj.iv);
+            const ciphertext = fromB64(encryptedObj.ciphertext);
+            const key = await deriveKey(password, salt);
+            const decrypted = await window.crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: iv },
+                key,
+                ciphertext
+            );
+            const dec = new TextDecoder();
+            return JSON.parse(dec.decode(decrypted));
+        }
+
         function App() {
-            const [data, setData] = useState(() => {
-                try {
-                    const local = localStorage.getItem('tracker_data_cache');
-                    return local ? JSON.parse(local) : { tasks: [], work: {} };
-                } catch (e) {
-                    return { tasks: [], work: {} };
-                }
-            });
+            const [data, setData] = useState({ tasks: [], work: {} });
+            const [isEncrypted, setIsEncrypted] = useState(false);
+            const [pendingContainer, setPendingContainer] = useState(null);
+            const [masterPassword, setMasterPassword] = useState(() => sessionStorage.getItem('tracker_master_pass') || '');
+            const [isLocked, setIsLocked] = useState(false);
+            const [pinInput, setPinInput] = useState('');
+            const [pinError, setPinError] = useState(false);
+            const [newPassInput, setNewPassInput] = useState('');
 
             const [newTaskText, setNewTaskText] = useState({});
             const [editingId, setEditingId] = useState(null);
@@ -93,16 +153,34 @@
 
             const [gistId, setGistId] = useState(() => localStorage.getItem('tracker_gist_id') || DEFAULT_GIST_ID);
             const [githubToken, setGithubToken] = useState(() => localStorage.getItem('tracker_gh_token') || '');
-            const [syncStatus, setSyncStatus] = useState('synced');
+            const [syncStatus, setSyncStatus] = useState('local-only');
             const [syncError, setSyncError] = useState('');
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-            const [savedPin, setSavedPin] = useState(() => localStorage.getItem('tracker_pin') || '');
-            const [isLocked, setIsLocked] = useState(() => !!localStorage.getItem('tracker_pin'));
-            const [pinInput, setPinInput] = useState('');
-            const [pinError, setPinError] = useState(false);
-            const [newPinInput, setNewPinInput] = useState('');
             const [copySuccess, setCopySuccess] = useState(false);
+
+            // Pomodoro Focus Timer
+            const [isPomodoroOpen, setIsPomodoroOpen] = useState(false);
+            const [pomoTime, setPomoTime] = useState(25 * 60);
+            const [pomoRunning, setPomoRunning] = useState(false);
+            const [pomoMode, setPomoMode] = useState('work');
+
+            useEffect(() => {
+                let timer = null;
+                if (pomoRunning && pomoTime > 0) {
+                    timer = setInterval(() => setPomoTime(t => t - 1), 1000);
+                } else if (pomoTime === 0 && pomoRunning) {
+                    setPomoRunning(false);
+                    alert(pomoMode === 'work' ? '🎉 Время фокуса завершено! Сделайте 5-минутный перерыв.' : '⏰ Перерыв окончен! Готовы снова к задачам?');
+                    if (pomoMode === 'work') {
+                        setPomoMode('break');
+                        setPomoTime(5 * 60);
+                    } else {
+                        setPomoMode('work');
+                        setPomoTime(25 * 60);
+                    }
+                }
+                return () => clearInterval(timer);
+            }, [pomoRunning, pomoTime, pomoMode]);
 
             useEffect(() => {
                 try {
@@ -117,13 +195,12 @@
                             setGithubToken(payload.token);
                             localStorage.setItem('tracker_gh_token', payload.token);
                         }
-                        if (payload.pin) {
-                            setSavedPin(payload.pin);
-                            localStorage.setItem('tracker_pin', payload.pin);
-                            setIsLocked(false);
+                        if (payload.pass) {
+                            setMasterPassword(payload.pass);
+                            sessionStorage.setItem('tracker_master_pass', payload.pass);
                         }
                         window.history.replaceState(null, '', window.location.pathname);
-                        alert('✅ Настройки синхронизации успешно применены!');
+                        alert('✅ Синхронизация и настройки успешно применены!');
                     }
                 } catch (e) {
                     console.error('Ошибка импорта ссылки синхронизации:', e);
@@ -159,15 +236,49 @@
                 return { tasks: raw.tasks || [], work };
             };
 
+            const processLoadedJson = useCallback(async (parsedJson, currentPass) => {
+                if (parsedJson && parsedJson.encrypted) {
+                    setIsEncrypted(true);
+                    setPendingContainer(parsedJson);
+
+                    const passToTry = currentPass || masterPassword;
+                    if (passToTry) {
+                        try {
+                            const decrypted = await decryptData(parsedJson, passToTry);
+                            const norm = normalizeData(decrypted);
+                            setData(norm);
+                            setIsLocked(false);
+                            setPinError(false);
+                            return true;
+                        } catch (e) {
+                            console.warn('Не удалось расшифровать паролем:', e);
+                            setIsLocked(true);
+                            return false;
+                        }
+                    } else {
+                        setIsLocked(true);
+                        return false;
+                    }
+                } else {
+                    setIsEncrypted(false);
+                    setPendingContainer(null);
+                    const norm = normalizeData(parsedJson || { tasks: [], work: {} });
+                    setData(norm);
+                    setIsLocked(false);
+                    return true;
+                }
+            }, [masterPassword]);
+
             const loadData = useCallback(async () => {
                 setSyncStatus('saving');
+                let rawContainer = null;
+
                 try {
                     const localRes = await fetch('/api/data', { signal: AbortSignal.timeout(1500) });
                     if (localRes.ok) {
-                        const json = await localRes.json();
-                        const norm = normalizeData(json);
-                        setData(norm);
-                        localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
+                        rawContainer = await localRes.json();
+                        localStorage.setItem('tracker_data_cache', JSON.stringify(rawContainer));
+                        await processLoadedJson(rawContainer);
                         setSyncStatus('local-server');
                         return;
                     }
@@ -183,10 +294,9 @@
                             let content = gistJson.files && gistJson.files['tasks.json'] ? gistJson.files['tasks.json'].content : null;
                             if (content) {
                                 content = content.replace(/^\uFEFF/, '');
-                                const parsed = JSON.parse(content);
-                                const norm = normalizeData(parsed);
-                                setData(norm);
-                                localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
+                                rawContainer = JSON.parse(content);
+                                localStorage.setItem('tracker_data_cache', JSON.stringify(rawContainer));
+                                await processLoadedJson(rawContainer);
                                 setSyncStatus(githubToken ? 'cloud-synced' : 'local-cached');
                                 setSyncError('');
                                 return;
@@ -205,11 +315,12 @@
                 const local = localStorage.getItem('tracker_data_cache');
                 if (local) {
                     try {
-                        setData(normalizeData(JSON.parse(local)));
+                        rawContainer = JSON.parse(local);
+                        await processLoadedJson(rawContainer);
                     } catch (e) {}
                 }
                 setSyncStatus(githubToken ? 'cloud-error' : 'local-only');
-            }, [gistId, githubToken]);
+            }, [gistId, githubToken, processLoadedJson]);
 
             useEffect(() => {
                 loadData();
@@ -218,21 +329,34 @@
             }, [loadData]);
 
             const saveTimeoutRef = useRef(null);
-            const saveToServer = (newData) => {
+            const saveToServer = (newData, explicitPass) => {
                 setData(newData);
-                localStorage.setItem('tracker_data_cache', JSON.stringify(newData));
                 setSyncStatus('saving');
 
                 if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
                 saveTimeoutRef.current = setTimeout(async () => {
-                    let localSaved = false;
+                    let containerToSave = newData;
+                    const passToUse = explicitPass !== undefined ? explicitPass : masterPassword;
 
+                    if (isEncrypted && passToUse) {
+                        try {
+                            containerToSave = await encryptData(newData, passToUse);
+                        } catch (e) {
+                            console.error('Ошибка шифрования перед сохранением:', e);
+                            setSyncStatus('cloud-error');
+                            return;
+                        }
+                    }
+
+                    localStorage.setItem('tracker_data_cache', JSON.stringify(containerToSave));
+
+                    let localSaved = false;
                     try {
                         const res = await fetch('/api/data', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(newData),
+                            body: JSON.stringify(containerToSave),
                             signal: AbortSignal.timeout(2000)
                         });
                         if (res.ok) localSaved = true;
@@ -251,7 +375,7 @@
                                     description: `Task Tracker Database - Updated ${new Date().toISOString()}`,
                                     files: {
                                         'tasks.json': {
-                                            content: JSON.stringify(newData, null, 2)
+                                            content: JSON.stringify(containerToSave, null, 2)
                                         }
                                     }
                                 })
@@ -282,6 +406,62 @@
                         setSyncStatus('cloud-error');
                     }
                 }, 600);
+            };
+
+            const handleUnlock = async (e) => {
+                if (e) e.preventDefault();
+                if (!pinInput) return;
+                setPinError(false);
+
+                if (pendingContainer) {
+                    try {
+                        const dec = await decryptData(pendingContainer, pinInput);
+                        setMasterPassword(pinInput);
+                        sessionStorage.setItem('tracker_master_pass', pinInput);
+                        setData(normalizeData(dec));
+                        setIsLocked(false);
+                        setPinInput('');
+                    } catch (err) {
+                        console.error('Ошибка расшифровки:', err);
+                        setPinError(true);
+                    }
+                }
+            };
+
+            const handleEnableEncryption = async () => {
+                if (!newPassInput.trim()) {
+                    alert('Введите пароль или PIN-код!');
+                    return;
+                }
+                const pass = newPassInput.trim();
+                try {
+                    setIsEncrypted(true);
+                    setMasterPassword(pass);
+                    sessionStorage.setItem('tracker_master_pass', pass);
+                    saveToServer(data, pass);
+                    setNewPassInput('');
+                    alert('🔒 Сквозное шифрование AES-256 успешно включено! Ваши задачи зашифрованы в облаке и на всех устройствах.');
+                } catch (e) {
+                    alert('Ошибка включения шифрования: ' + e.message);
+                }
+            };
+
+            const handleDisableEncryption = () => {
+                if (confirm('Отключить сквозное шифрование? Задачи будут сохранены в открытом виде.')) {
+                    setIsEncrypted(false);
+                    setMasterPassword('');
+                    sessionStorage.removeItem('tracker_master_pass');
+                    saveToServer(data, '');
+                    alert('🔓 Шифрование отключено.');
+                }
+            };
+
+            const handleLockNow = () => {
+                setMasterPassword('');
+                sessionStorage.removeItem('tracker_master_pass');
+                setIsLocked(true);
+                setData({ tasks: [], work: {} });
+                loadData();
             };
 
             const addTask = (date) => {
@@ -445,60 +625,8 @@
                 }
             };
 
-            const handleUnlock = (e) => {
-                if (e) e.preventDefault();
-                if (pinInput === savedPin) {
-                    setIsLocked(false);
-                    setPinInput('');
-                    setPinError(false);
-                } else {
-                    setPinError(true);
-                }
-            };
-
-            const handleSavePin = () => {
-                if (newPinInput.trim()) {
-                    setSavedPin(newPinInput.trim());
-                    localStorage.setItem('tracker_pin', newPinInput.trim());
-                    setNewPinInput('');
-                    alert('🔒 PIN-код успешно установлен!');
-                } else {
-                    setSavedPin('');
-                    localStorage.removeItem('tracker_pin');
-                    alert('🔓 Защита PIN-кодом отключена');
-                }
-            };
-
-            const exportBackup = () => {
-                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
-                const dlAnchor = document.createElement('a');
-                dlAnchor.setAttribute("href", dataStr);
-                dlAnchor.setAttribute("download", `tasks_backup_${todayKey}.json`);
-                dlAnchor.click();
-            };
-
-            const importBackup = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (evt) => {
-                    try {
-                        const parsed = JSON.parse(evt.target.result);
-                        if (parsed.tasks && parsed.work) {
-                            saveToServer(normalizeData(parsed));
-                            alert('✅ Резервная копия успешно восстановлена!');
-                        } else {
-                            alert('❌ Неверный формат файла!');
-                        }
-                    } catch (err) {
-                        alert('❌ Ошибка чтения файла!');
-                    }
-                };
-                reader.readAsText(file);
-            };
-
             const copyMobileLink = () => {
-                const payload = { gistId, token: githubToken, pin: savedPin };
+                const payload = { gistId, token: githubToken, pass: masterPassword };
                 const base64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
                 const url = `${window.location.origin}${window.location.pathname}#sync=${encodeURIComponent(base64)}`;
                 navigator.clipboard.writeText(url).then(() => {
@@ -527,28 +655,35 @@
                 }
             };
 
-            if (isLocked && savedPin) {
+            // Global stats
+            const currentModeTasks = data.tasks.filter(t => (t.type || 'study') === viewMode);
+            const totalTasksCount = currentModeTasks.length;
+            const doneTasksCount = currentModeTasks.filter(t => t.isDone).length;
+            const completionPercent = totalTasksCount ? Math.round((doneTasksCount / totalTasksCount) * 100) : 0;
+
+            if (isLocked) {
                 return (
-                    <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
-                        <div className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-8 rounded-2xl shadow-2xl max-w-sm w-full text-center">
-                            <div className="w-16 h-16 bg-blue-100 dark:bg-sky-950/60 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                    <div className="fixed inset-0 bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-4 z-50">
+                        <div className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-8 rounded-3xl shadow-2xl max-w-sm w-full text-center">
+                            <div className="w-16 h-16 bg-blue-100 dark:bg-sky-950/60 text-blue-600 dark:text-sky-400 rounded-2xl flex items-center justify-center mx-auto mb-4 text-3xl shadow-inner">
                                 🔒
                             </div>
-                            <h2 className="text-xl font-bold text-slate-800 dark:text-zinc-100 mb-1">Трекер защищен</h2>
-                            <p className="text-xs text-slate-500 dark:text-zinc-400 mb-6">Введите ваш PIN-код для входа</p>
+                            <h2 className="text-xl font-black text-slate-800 dark:text-zinc-100 mb-1">База защищена</h2>
+                            <p className="text-xs text-slate-500 dark:text-zinc-400 mb-6">
+                                Данные зашифрованы (AES-256). Введите ваш пароль или PIN-код для расшифровки:
+                            </p>
                             <form onSubmit={handleUnlock} className="space-y-4">
                                 <input
                                     type="password"
-                                    inputMode="numeric"
                                     autoFocus
                                     placeholder="••••"
                                     value={pinInput}
                                     onChange={e => { setPinInput(e.target.value); setPinError(false); }}
-                                    className={`w-full text-center text-2xl tracking-[0.5em] py-3 rounded-xl border font-black outline-none transition-all dark:bg-zinc-700 dark:text-white ${pinError ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-300 dark:border-zinc-600 focus:border-blue-500'}`}
+                                    className={`w-full text-center text-xl tracking-[0.3em] py-3 rounded-xl border font-black outline-none transition-all dark:bg-zinc-700 dark:text-white ${pinError ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-300 dark:border-zinc-600 focus:border-blue-500'}`}
                                 />
-                                {pinError && <p className="text-red-500 text-xs font-semibold">Неверный PIN-код</p>}
-                                <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all text-sm">
-                                    Разблокировать
+                                {pinError && <p className="text-red-500 text-xs font-semibold">❌ Неверный пароль или PIN-код</p>}
+                                <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all text-sm flex items-center justify-center gap-2">
+                                    <span>🔓 Разблокировать</span>
                                 </button>
                             </form>
                         </div>
@@ -564,9 +699,14 @@
                                 <h1 className={`text-2xl font-black uppercase tracking-tight transition-colors ${viewMode === 'work' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-700 dark:text-sky-400'}`}>
                                     {viewMode === 'study' ? '🎓 ТАСКИ: УЧЕБА' : '💼 ТАСКИ: РАБОТА'}
                                 </h1>
-                                <p className="text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-widest mt-0.5">
-                                    Сентябрь 2026 — Январь 2027+
-                                </p>
+                                <div className="flex items-center gap-3 mt-1">
+                                    <p className="text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-widest">
+                                        Сентябрь 2026 — Январь 2027+
+                                    </p>
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300">
+                                        ✓ {doneTasksCount}/{totalTasksCount} ({completionPercent}%)
+                                    </span>
+                                </div>
                             </div>
                         </div>
 
@@ -615,6 +755,19 @@
                             </button>
 
                             <button
+                                onClick={() => setIsPomodoroOpen(!isPomodoroOpen)}
+                                title="Фокус-таймер Pomodoro (25/5)"
+                                className={`px-3 py-1.5 rounded-lg border font-bold text-xs flex items-center gap-1.5 transition-all ${
+                                    pomoRunning
+                                        ? 'bg-rose-500 text-white border-rose-600 animate-pulse'
+                                        : 'bg-slate-200 border-slate-300 dark:bg-zinc-700 dark:border-zinc-600'
+                                }`}
+                            >
+                                <span>⏱️</span>
+                                <span>{Math.floor(pomoTime / 60)}:{String(pomoTime % 60).padStart(2, '0')}</span>
+                            </button>
+
+                            <button
                                 onClick={() => setViewMode(viewMode === 'study' ? 'work' : 'study')}
                                 className={`px-4 py-1.5 rounded-lg shadow font-bold text-xs transition-all ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-blue-700 hover:bg-blue-800 dark:bg-sky-600 text-white'}`}
                             >
@@ -629,13 +782,13 @@
                                 {isDark ? '☀️' : '🌙'}
                             </button>
 
-                            {savedPin && (
+                            {isEncrypted && (
                                 <button
-                                    onClick={() => setIsLocked(true)}
-                                    title="Заблокировать трекер"
-                                    className="px-3 py-1.5 rounded-lg bg-slate-200 border border-slate-300 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs"
+                                    onClick={handleLockNow}
+                                    title="Заблокировать трекер прямо сейчас"
+                                    className="px-3 py-1.5 rounded-lg bg-amber-100 border border-amber-300 text-amber-800 dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-300 font-bold text-xs hover:bg-amber-200"
                                 >
-                                    🔒
+                                    🔒 Блок
                                 </button>
                             )}
 
@@ -648,6 +801,37 @@
                             </button>
                         </div>
                     </header>
+
+                    {isPomodoroOpen && (
+                        <div className="mb-6 p-4 bg-white dark:bg-zinc-800 rounded-2xl border border-slate-300 dark:border-zinc-700 shadow-md flex flex-wrap items-center justify-between gap-4">
+                            <div className="flex items-center gap-3">
+                                <span className="text-2xl">🍅</span>
+                                <div>
+                                    <h4 className="font-bold text-sm text-slate-800 dark:text-zinc-100">
+                                        Фокус-таймер Pomodoro ({pomoMode === 'work' ? 'Учеба / Фокус 25 мин' : 'Перерыв 5 мин'})
+                                    </h4>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">Помогает сконцентрироваться на задаче без отвлечений</p>
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <div className="text-3xl font-black font-mono text-blue-600 dark:text-sky-400">
+                                    {Math.floor(pomoTime / 60)}:{String(pomoTime % 60).padStart(2, '0')}
+                                </div>
+                                <button
+                                    onClick={() => setPomoRunning(!pomoRunning)}
+                                    className={`px-4 py-2 rounded-xl font-bold text-xs text-white shadow ${pomoRunning ? 'bg-amber-500 hover:bg-amber-600' : 'bg-emerald-600 hover:bg-emerald-700'}`}
+                                >
+                                    {pomoRunning ? 'Пауза' : 'Старт'}
+                                </button>
+                                <button
+                                    onClick={() => { setPomoRunning(false); setPomoTime(pomoMode === 'work' ? 25 * 60 : 5 * 60); }}
+                                    className="px-3 py-2 rounded-xl bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300 font-bold text-xs"
+                                >
+                                    Сброс
+                                </button>
+                            </div>
+                        </div>
+                    )}
 
                     <div className="space-y-10">
                         {getWeeks().map((week, wIdx) => {
@@ -973,26 +1157,60 @@
 
                                 <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-xl border border-slate-200 dark:border-zinc-700">
                                     <h4 className="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-zinc-300 flex items-center gap-1.5">
-                                        🔒 Защита PIN-кодом
+                                        🔒 Сквозное шифрование (AES-256)
                                     </h4>
                                     <p className="text-[11px] text-slate-500 dark:text-zinc-400">
-                                        {savedPin ? 'PIN-код активен. Для отключения оставьте поле пустым и сохраните.' : 'Установите PIN-код для защиты доступа к вашим задачам.'}
+                                        Защищает ваши задачи мастер-паролем или PIN-кодом. В облаке и на устройствах данные хранятся в зашифрованном виде. Без пароля никто не сможет их прочитать.
                                     </p>
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="password"
-                                            placeholder="Новый PIN-код..."
-                                            value={newPinInput}
-                                            onChange={e => setNewPinInput(e.target.value)}
-                                            className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
-                                        />
-                                        <button
-                                            onClick={handleSavePin}
-                                            className="px-4 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-lg text-xs"
-                                        >
-                                            Сохранить
-                                        </button>
-                                    </div>
+                                    
+                                    {isEncrypted ? (
+                                        <div className="space-y-3">
+                                            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center justify-between">
+                                                <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300 flex items-center gap-1.5">
+                                                    <span>🛡️</span> Шифрование активно
+                                                </span>
+                                                <button
+                                                    onClick={handleDisableEncryption}
+                                                    className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[10px]"
+                                                >
+                                                    Отключить
+                                                </button>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="password"
+                                                    placeholder="Новый мастер-пароль / PIN..."
+                                                    value={newPassInput}
+                                                    onChange={e => setNewPassInput(e.target.value)}
+                                                    className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
+                                                />
+                                                <button
+                                                    onClick={handleEnableEncryption}
+                                                    className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-lg text-xs"
+                                                >
+                                                    Сменить пароль
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            <div className="flex gap-2">
+                                                <input
+                                                    type="password"
+                                                    placeholder="Задайте мастер-пароль или PIN..."
+                                                    value={newPassInput}
+                                                    onChange={e => setNewPassInput(e.target.value)}
+                                                    className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
+                                                />
+                                                <button
+                                                    onClick={handleEnableEncryption}
+                                                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs"
+                                                >
+                                                    Зашифровать
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
 
                                 <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-xl border border-slate-200 dark:border-zinc-700">
