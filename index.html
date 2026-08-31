@@ -1,0 +1,991 @@
+<!DOCTYPE html>
+<html id="html-tag">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ТАСКИ — Трекер задач и времени</title>
+    <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"%3E%3Crect width="64" height="64" rx="14" fill="%232563eb"/%3E%3Cpath d="M18 19h28v26H18z" fill="white" opacity=".96"/%3E%3Cpath d="M24 29l5 5 12-13" fill="none" stroke="%2310b981" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/%3E%3Cpath d="M24 41h17" stroke="%232563eb" stroke-width="4" stroke-linecap="round"/%3E%3C/svg%3E'>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.4/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="./styles.css">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    borderRadius: { xl: '12px', lg: '8px' }
+                }
+            }
+        };
+    </script>
+</head>
+<body class="bg-slate-200 dark:bg-zinc-900 text-slate-900 dark:text-zinc-100 min-h-screen transition-colors duration-300 pb-24 font-sans antialiased">
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        const months = ['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+        const dows = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
+        const colorOrder = { red: 1, orange: 2, green: 3, blue: 4, default: 5 };
+
+        const formatTimeInput = (raw) => {
+            const digits = raw.replace(/\D/g, '').slice(0, 4);
+            if (digits.length <= 2) return digits;
+            return digits.slice(0, 2) + ':' + digits.slice(2);
+        };
+
+        const TimeInput = ({ value, onChange, className }) => {
+            const handleKey = (e) => {
+                if (e.key === 'Backspace' && value && value.endsWith(':')) {
+                    e.preventDefault();
+                    onChange(value.slice(0, -1));
+                }
+            };
+            return (
+                <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={5}
+                    placeholder="--:--"
+                    className={className}
+                    value={value || ''}
+                    onKeyDown={handleKey}
+                    onChange={e => onChange(formatTimeInput(e.target.value))}
+                />
+            );
+        };
+
+        const toDateKey = (dt) => `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+        const todayKey = toDateKey(new Date());
+
+        const DEFAULT_GIST_ID = 'e66de7295cfcb3a815f2530ae3a21e04';
+
+        function App() {
+            const [data, setData] = useState(() => {
+                try {
+                    const local = localStorage.getItem('tracker_data_cache');
+                    return local ? JSON.parse(local) : { tasks: [], work: {} };
+                } catch (e) {
+                    return { tasks: [], work: {} };
+                }
+            });
+
+            const [newTaskText, setNewTaskText] = useState({});
+            const [editingId, setEditingId] = useState(null);
+            const [editValue, setEditValue] = useState("");
+            const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark');
+            const [viewMode, setViewMode] = useState(() => localStorage.getItem('viewMode') || 'study');
+            const [draggedTaskId, setDraggedTaskId] = useState(null);
+            const [dropTarget, setDropTarget] = useState({ id: null, position: null });
+            const [collapsedWeeks, setCollapsedWeeks] = useState({});
+            const [expandedBreaks, setExpandedBreaks] = useState({});
+
+            const [extraWeeks, setExtraWeeks] = useState(() => {
+                const saved = localStorage.getItem('tracker_extra_weeks');
+                return saved ? parseInt(saved, 10) : 0;
+            });
+
+            const [gistId, setGistId] = useState(() => localStorage.getItem('tracker_gist_id') || DEFAULT_GIST_ID);
+            const [githubToken, setGithubToken] = useState(() => localStorage.getItem('tracker_gh_token') || '');
+            const [syncStatus, setSyncStatus] = useState('synced');
+            const [syncError, setSyncError] = useState('');
+            const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+            const [savedPin, setSavedPin] = useState(() => localStorage.getItem('tracker_pin') || '');
+            const [isLocked, setIsLocked] = useState(() => !!localStorage.getItem('tracker_pin'));
+            const [pinInput, setPinInput] = useState('');
+            const [pinError, setPinError] = useState(false);
+            const [newPinInput, setNewPinInput] = useState('');
+            const [copySuccess, setCopySuccess] = useState(false);
+
+            useEffect(() => {
+                try {
+                    const hash = window.location.hash;
+                    if (hash && hash.startsWith('#sync=')) {
+                        const payload = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(hash.replace('#sync=', ''))))));
+                        if (payload.gistId) {
+                            setGistId(payload.gistId);
+                            localStorage.setItem('tracker_gist_id', payload.gistId);
+                        }
+                        if (payload.token) {
+                            setGithubToken(payload.token);
+                            localStorage.setItem('tracker_gh_token', payload.token);
+                        }
+                        if (payload.pin) {
+                            setSavedPin(payload.pin);
+                            localStorage.setItem('tracker_pin', payload.pin);
+                            setIsLocked(false);
+                        }
+                        window.history.replaceState(null, '', window.location.pathname);
+                        alert('✅ Настройки синхронизации успешно применены!');
+                    }
+                } catch (e) {
+                    console.error('Ошибка импорта ссылки синхронизации:', e);
+                }
+            }, []);
+
+            useEffect(() => {
+                const html = document.getElementById('html-tag');
+                if (isDark) html.classList.add('dark');
+                else html.classList.remove('dark');
+                localStorage.setItem('theme', isDark ? 'dark' : 'light');
+            }, [isDark]);
+
+            useEffect(() => {
+                localStorage.setItem('viewMode', viewMode);
+            }, [viewMode]);
+
+            useEffect(() => {
+                localStorage.setItem('tracker_extra_weeks', extraWeeks);
+            }, [extraWeeks]);
+
+            const normalizeData = (raw) => {
+                const work = {};
+                Object.entries(raw.work || {}).forEach(([date, w]) => {
+                    if (w.range && !w.start) {
+                        const m = w.range.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/);
+                        if (m) {
+                            w = { ...w, start: `${String(m[1]).padStart(2,'0')}:${m[2]}`, end: `${String(m[3]).padStart(2,'0')}:${m[4]}` };
+                        }
+                    }
+                    work[date] = w;
+                });
+                return { tasks: raw.tasks || [], work };
+            };
+
+            const loadData = useCallback(async () => {
+                setSyncStatus('saving');
+                try {
+                    const localRes = await fetch('/api/data', { signal: AbortSignal.timeout(1500) });
+                    if (localRes.ok) {
+                        const json = await localRes.json();
+                        const norm = normalizeData(json);
+                        setData(norm);
+                        localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
+                        setSyncStatus('synced');
+                        return;
+                    }
+                } catch (e) {}
+
+                if (gistId) {
+                    try {
+                        const headers = {};
+                        if (githubToken) headers['Authorization'] = `Bearer ${githubToken.trim()}`;
+                        const gistRes = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+                        if (gistRes.ok) {
+                            const gistJson = await gistRes.json();
+                            const content = gistJson.files && gistJson.files['tasks.json'] ? gistJson.files['tasks.json'].content : null;
+                            if (content) {
+                                const parsed = JSON.parse(content);
+                                const norm = normalizeData(parsed);
+                                setData(norm);
+                                localStorage.setItem('tracker_data_cache', JSON.stringify(norm));
+                                setSyncStatus('synced');
+                                setSyncError('');
+                                return;
+                            }
+                        } else {
+                            if (gistRes.status === 404) setSyncError('Gist не найден (проверьте ID)');
+                            else if (gistRes.status === 401) setSyncError('Неверный GitHub токен');
+                        }
+                    } catch (e) {
+                        console.warn('Gist fetch error:', e);
+                        setSyncError('Сетевая ошибка при синхронизации');
+                    }
+                }
+
+                const local = localStorage.getItem('tracker_data_cache');
+                if (local) {
+                    setData(normalizeData(JSON.parse(local)));
+                }
+                setSyncStatus(githubToken || gistId ? 'offline' : 'synced');
+            }, [gistId, githubToken]);
+
+            useEffect(() => {
+                loadData();
+                const interval = setInterval(loadData, 45000);
+                return () => clearInterval(interval);
+            }, [loadData]);
+
+            const saveTimeoutRef = useRef(null);
+            const saveToServer = (newData) => {
+                setData(newData);
+                localStorage.setItem('tracker_data_cache', JSON.stringify(newData));
+                setSyncStatus('saving');
+
+                if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+
+                saveTimeoutRef.current = setTimeout(async () => {
+                    let savedSuccessfully = false;
+
+                    try {
+                        const res = await fetch('/api/data', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(newData),
+                            signal: AbortSignal.timeout(2000)
+                        });
+                        if (res.ok) savedSuccessfully = true;
+                    } catch (e) {}
+
+                    if (gistId && githubToken) {
+                        try {
+                            const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+                                method: 'PATCH',
+                                headers: {
+                                    'Authorization': `Bearer ${githubToken.trim()}`,
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'application/vnd.github.v3+json'
+                                },
+                                body: JSON.stringify({
+                                    description: `Task Tracker Database - Updated ${new Date().toISOString()}`,
+                                    files: {
+                                        'tasks.json': {
+                                            content: JSON.stringify(newData, null, 2)
+                                        }
+                                    }
+                                })
+                            });
+                            if (res.ok) {
+                                savedSuccessfully = true;
+                                setSyncError('');
+                            } else {
+                                const errData = await res.json();
+                                setSyncError(errData.message || 'Ошибка сохранения в Gist');
+                            }
+                        } catch (e) {
+                            console.error('Ошибка записи в Gist:', e);
+                            setSyncError('Сетевая ошибка сохранения');
+                        }
+                    }
+
+                    setSyncStatus(savedSuccessfully || (!githubToken && !gistId) ? 'synced' : 'error');
+                }, 600);
+            };
+
+            const addTask = (date) => {
+                const text = newTaskText[date] && newTaskText[date].trim();
+                if (!text) return;
+                const newTask = { id: Date.now(), date, text, isDone: false, color: 'default', type: viewMode };
+                saveToServer({ ...data, tasks: [newTask, ...data.tasks] });
+                setNewTaskText({ ...newTaskText, [date]: '' });
+            };
+
+            const toggleDone = (id) => saveToServer({ ...data, tasks: data.tasks.map(t => t.id === id ? { ...t, isDone: !t.isDone } : t) });
+            const deleteTask = (id) => {
+                if (confirm('Удалить задачу?')) {
+                    saveToServer({ ...data, tasks: data.tasks.filter(t => t.id !== id) });
+                }
+            };
+            const setColor = (id, color) => saveToServer({ ...data, tasks: data.tasks.map(t => t.id === id ? { ...t, color } : t) });
+
+            const sortDayTasks = (date) => {
+                const daySorted = data.tasks
+                    .filter(t => t.date === date && (t.type || 'study') === viewMode)
+                    .sort((a, b) => (colorOrder[a.color || 'default'] || 5) - (colorOrder[b.color || 'default'] || 5) || Number(a.isDone) - Number(b.isDone) || b.id - a.id);
+                let idx = 0;
+                saveToServer({
+                    ...data,
+                    tasks: data.tasks.map(t => t.date === date && (t.type || 'study') === viewMode ? daySorted[idx++] : t)
+                });
+            };
+
+            const onDragStart = (e, id) => {
+                setDraggedTaskId(id);
+                e.dataTransfer.effectAllowed = 'move';
+            };
+
+            const onDragOverTask = (e, targetId) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const rect = e.currentTarget.getBoundingClientRect();
+                const position = e.clientY < rect.top + rect.height / 2 ? 'top' : 'bottom';
+                if (dropTarget.id !== targetId || dropTarget.position !== position) {
+                    setDropTarget({ id: targetId, position });
+                }
+            };
+
+            const onDropOnTask = (e, targetDate, targetId) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!draggedTaskId || draggedTaskId === targetId) {
+                    setDropTarget({ id: null, position: null });
+                    setDraggedTaskId(null);
+                    return;
+                }
+                const updatedTasks = [...data.tasks];
+                const draggedIdx = updatedTasks.findIndex(t => t.id === draggedTaskId);
+                if (draggedIdx < 0) return;
+                const draggedTask = { ...updatedTasks[draggedIdx], date: targetDate };
+                updatedTasks.splice(draggedIdx, 1);
+                const dropIdx = updatedTasks.findIndex(t => t.id === targetId);
+                updatedTasks.splice(dropTarget.position === 'top' ? dropIdx : dropIdx + 1, 0, draggedTask);
+                saveToServer({ ...data, tasks: updatedTasks });
+                setDropTarget({ id: null, position: null });
+                setDraggedTaskId(null);
+            };
+
+            const onDropOnDay = (e, date) => {
+                e.preventDefault();
+                if (!draggedTaskId) return;
+                saveToServer({ ...data, tasks: data.tasks.map(t => t.id === draggedTaskId ? { ...t, date } : t) });
+                setDraggedTaskId(null);
+                setDropTarget({ id: null, position: null });
+            };
+
+            const timeToMin = (t) => {
+                if (!t) return null;
+                const [h, m] = t.split(':').map(Number);
+                return h * 60 + m;
+            };
+
+            const formatHours = (hours) => {
+                const value = parseFloat(hours);
+                if (!Number.isFinite(value) || value <= 0) return '';
+                const totalMinutes = Math.round(value * 60);
+                const h = Math.floor(totalMinutes / 60);
+                const m = totalMinutes % 60;
+                return h + 'ч' + (m ? ' ' + m + 'м' : '');
+            };
+
+            const recalcHours = (date, patch = {}) => {
+                const w = { ...(data.work[date] || {}), ...patch };
+                const s = timeToMin(w.start), e = timeToMin(w.end);
+                if (s == null || e == null) return patch;
+                let total = (e >= s ? e - s : e + 1440 - s);
+                (w.breaks || []).forEach(b => {
+                    const bs = timeToMin(b.start), be = timeToMin(b.end);
+                    if (bs != null && be != null) total -= (be >= bs ? be - bs : be + 1440 - bs);
+                });
+                return { ...patch, hours: Math.max(0, total / 60).toFixed(2) };
+            };
+
+            const handleWorkTime = (date, field, value) => {
+                const patch = recalcHours(date, { [field]: value });
+                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            };
+
+            const handleBreakChange = (date, idx, field, value) => {
+                const breaks = [...(data.work[date]?.breaks || [])];
+                breaks[idx] = { ...breaks[idx], [field]: value };
+                const patch = recalcHours(date, { breaks });
+                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            };
+
+            const addBreak = (date) => {
+                const breaks = [...(data.work[date]?.breaks || []), { start: '', end: '' }];
+                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), breaks } } });
+            };
+
+            const removeBreak = (date, idx) => {
+                const breaks = (data.work[date]?.breaks || []).filter((_, i) => i !== idx);
+                const patch = recalcHours(date, { breaks });
+                saveToServer({ ...data, work: { ...data.work, [date]: { ...(data.work[date] || {}), ...patch } } });
+            };
+
+            const toggleBreaks = (date) => setExpandedBreaks(prev => ({ ...prev, [date]: !prev[date] }));
+
+            const getWeeks = () => {
+                const dates = [];
+                const start = new Date(2026, 7, 31);
+                const end = new Date(2027, 0, 31);
+                end.setDate(end.getDate() + (extraWeeks * 7));
+
+                for (let dt = new Date(start); dt <= end; dt.setDate(dt.getDate() + 1)) {
+                    dates.push(toDateKey(dt));
+                }
+
+                const weeks = [];
+                let current = [];
+                dates.forEach(d => {
+                    current.push(d);
+                    if (new Date(d).getDay() === 0) {
+                        weeks.push(current);
+                        current = [];
+                    }
+                });
+                if (current.length) weeks.push(current);
+                return weeks;
+            };
+
+            const isWeekPast = (week) => week[week.length - 1] < todayKey;
+            const isWeekCurrent = (week) => week[0] <= todayKey && todayKey <= week[week.length - 1];
+            const isWeekCollapsed = (week, wIdx) => collapsedWeeks[wIdx] !== undefined ? collapsedWeeks[wIdx] : isWeekPast(week);
+            const toggleWeek = (wIdx) => setCollapsedWeeks(prev => ({ ...prev, [wIdx]: !prev[wIdx] }));
+
+            const scrollToToday = () => {
+                const el = document.getElementById(`day-${todayKey}`);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('ring-4', 'ring-blue-500');
+                    setTimeout(() => el.classList.remove('ring-4', 'ring-blue-500'), 2500);
+                } else {
+                    alert('Сегодняшний день находится в свернутой неделе. Разверните её!');
+                }
+            };
+
+            const handleUnlock = (e) => {
+                if (e) e.preventDefault();
+                if (pinInput === savedPin) {
+                    setIsLocked(false);
+                    setPinInput('');
+                    setPinError(false);
+                } else {
+                    setPinError(true);
+                }
+            };
+
+            const handleSavePin = () => {
+                if (newPinInput.trim()) {
+                    setSavedPin(newPinInput.trim());
+                    localStorage.setItem('tracker_pin', newPinInput.trim());
+                    setNewPinInput('');
+                    alert('🔒 PIN-код успешно установлен!');
+                } else {
+                    setSavedPin('');
+                    localStorage.removeItem('tracker_pin');
+                    alert('🔓 Защита PIN-кодом отключена');
+                }
+            };
+
+            const exportBackup = () => {
+                const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
+                const dlAnchor = document.createElement('a');
+                dlAnchor.setAttribute("href", dataStr);
+                dlAnchor.setAttribute("download", `tasks_backup_${todayKey}.json`);
+                dlAnchor.click();
+            };
+
+            const importBackup = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    try {
+                        const parsed = JSON.parse(evt.target.result);
+                        if (parsed.tasks && parsed.work) {
+                            saveToServer(normalizeData(parsed));
+                            alert('✅ Резервная копия успешно восстановлена!');
+                        } else {
+                            alert('❌ Неверный формат файла!');
+                        }
+                    } catch (err) {
+                        alert('❌ Ошибка чтения файла!');
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            const copyMobileLink = () => {
+                const payload = { gistId, token: githubToken, pin: savedPin };
+                const base64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+                const url = `${window.location.origin}${window.location.pathname}#sync=${encodeURIComponent(base64)}`;
+                navigator.clipboard.writeText(url).then(() => {
+                    setCopySuccess(true);
+                    setTimeout(() => setCopySuccess(false), 3000);
+                });
+            };
+
+            const taskColorClass = (color) => {
+                switch (color) {
+                    case 'red': return 'bg-rose-50 border-rose-200 dark:bg-rose-950/30 dark:border-rose-800/40';
+                    case 'orange': return 'bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-800/40';
+                    case 'green': return 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950/30 dark:border-emerald-800/40';
+                    case 'blue': return 'bg-blue-50 border-blue-200 dark:bg-sky-950/30 dark:border-sky-800/40';
+                    default: return 'bg-white border-slate-300 dark:bg-zinc-800 dark:border-zinc-700';
+                }
+            };
+
+            const swatchClass = (color) => {
+                switch (color) {
+                    case 'red': return 'bg-red-500';
+                    case 'orange': return 'bg-orange-500';
+                    case 'green': return 'bg-green-500';
+                    case 'blue': return 'bg-blue-500';
+                    default: return 'bg-white';
+                }
+            };
+
+            if (isLocked && savedPin) {
+                return (
+                    <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md flex items-center justify-center p-4 z-50">
+                        <div className="bg-white dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 p-8 rounded-2xl shadow-2xl max-w-sm w-full text-center">
+                            <div className="w-16 h-16 bg-blue-100 dark:bg-sky-950/60 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">
+                                🔒
+                            </div>
+                            <h2 className="text-xl font-bold text-slate-800 dark:text-zinc-100 mb-1">Трекер защищен</h2>
+                            <p className="text-xs text-slate-500 dark:text-zinc-400 mb-6">Введите ваш PIN-код для входа</p>
+                            <form onSubmit={handleUnlock} className="space-y-4">
+                                <input
+                                    type="password"
+                                    inputMode="numeric"
+                                    autoFocus
+                                    placeholder="••••"
+                                    value={pinInput}
+                                    onChange={e => { setPinInput(e.target.value); setPinError(false); }}
+                                    className={`w-full text-center text-2xl tracking-[0.5em] py-3 rounded-xl border font-black outline-none transition-all dark:bg-zinc-700 dark:text-white ${pinError ? 'border-red-500 ring-2 ring-red-500/20' : 'border-slate-300 dark:border-zinc-600 focus:border-blue-500'}`}
+                                />
+                                {pinError && <p className="text-red-500 text-xs font-semibold">Неверный PIN-код</p>}
+                                <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-lg transition-all text-sm">
+                                    Разблокировать
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="max-w-[1800px] mx-auto p-3 sm:p-4 md:p-6 text-[13px]">
+                    <header className="flex flex-col lg:flex-row justify-between items-center mb-8 bg-slate-50 dark:bg-zinc-800 p-5 rounded-2xl shadow-lg border border-slate-300 dark:border-zinc-700 gap-6">
+                        <div className="flex items-center gap-4">
+                            <div>
+                                <h1 className={`text-2xl font-black uppercase tracking-tight transition-colors ${viewMode === 'work' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-700 dark:text-sky-400'}`}>
+                                    {viewMode === 'study' ? '🎓 ТАСКИ: УЧЕБА' : '💼 ТАСКИ: РАБОТА'}
+                                </h1>
+                                <p className="text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-widest mt-0.5">
+                                    Сентябрь 2026 — Январь 2027+
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                            <div
+                                onClick={loadData}
+                                title={syncError ? `Ошибка: ${syncError}. Нажмите для повтора.` : 'Статус синхронизации. Нажмите для обновления'}
+                                className={`cursor-pointer px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                                    syncStatus === 'synced'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
+                                        : syncStatus === 'saving'
+                                        ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800 animate-pulse'
+                                        : 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800'
+                                }`}
+                            >
+                                <span className={`w-2 h-2 rounded-full ${syncStatus === 'synced' ? 'bg-emerald-500' : syncStatus === 'saving' ? 'bg-amber-500' : 'bg-rose-500'}`}></span>
+                                <span>{syncStatus === 'synced' ? 'Облако: ОК' : syncStatus === 'saving' ? 'Сохранение...' : 'Оффлайн / Ошибка'}</span>
+                            </div>
+
+                            <button
+                                onClick={scrollToToday}
+                                title="Перейти к сегодняшнему дню"
+                                className="px-3.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 border border-blue-300 dark:bg-sky-950/50 dark:text-sky-300 dark:border-sky-800 font-bold text-xs hover:bg-blue-200 dark:hover:bg-sky-900/60 transition-all flex items-center gap-1"
+                            >
+                                🎯 Сегодня
+                            </button>
+
+                            <button
+                                onClick={() => setViewMode(viewMode === 'study' ? 'work' : 'study')}
+                                className={`px-4 py-1.5 rounded-lg shadow font-bold text-xs transition-all ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-blue-700 hover:bg-blue-800 dark:bg-sky-600 text-white'}`}
+                            >
+                                {viewMode === 'study' ? 'К РАБОТЕ' : 'К УЧЕБЕ'}
+                            </button>
+
+                            <button
+                                onClick={() => setIsDark(!isDark)}
+                                title="Сменить тему"
+                                className="px-3 py-1.5 rounded-lg bg-slate-200 border border-slate-300 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs"
+                            >
+                                {isDark ? '☀️' : '🌙'}
+                            </button>
+
+                            {savedPin && (
+                                <button
+                                    onClick={() => setIsLocked(true)}
+                                    title="Заблокировать трекер"
+                                    className="px-3 py-1.5 rounded-lg bg-slate-200 border border-slate-300 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs"
+                                >
+                                    🔒
+                                </button>
+                            )}
+
+                            <button
+                                onClick={() => setIsSettingsOpen(true)}
+                                title="Настройки синхронизации и защиты"
+                                className="px-3 py-1.5 rounded-lg bg-slate-200 border border-slate-300 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs"
+                            >
+                                ⚙️
+                            </button>
+                        </div>
+                    </header>
+
+                    <div className="space-y-10">
+                        {getWeeks().map((week, wIdx) => {
+                            let worked = 0;
+                            week.forEach(d => worked += parseFloat(data.work[d]?.hours || 0));
+                            const target = week.filter(d => ![0,6].includes(new Date(d).getDay())).length * 8;
+                            const weekTasks = data.tasks.filter(t => week.includes(t.date) && (t.type || 'study') === viewMode);
+                            const undoneCount = weekTasks.filter(t => !t.isDone).length;
+                            const collapsed = isWeekCollapsed(week, wIdx);
+                            const weekState = isWeekCurrent(week) ? 'ТЕКУЩАЯ' : isWeekPast(week) ? 'ПРОШЛА' : 'СЛЕДУЮЩАЯ';
+
+                            const startDt = new Date(week[0]);
+                            const endDt = new Date(week[week.length - 1]);
+                            const dateRangeLabel = `${startDt.getDate()} ${months[startDt.getMonth()]} — ${endDt.getDate()} ${months[endDt.getMonth()]}`;
+
+                            return (
+                                <section key={wIdx} className="transition-all">
+                                    <div className={`flex flex-col sm:flex-row justify-between items-start sm:items-center text-white rounded-xl p-4 mb-4 shadow-md gap-3 ${
+                                        isWeekCurrent(week)
+                                            ? (viewMode === 'work' ? 'bg-emerald-700 ring-2 ring-emerald-400' : 'bg-blue-700 dark:bg-sky-700 ring-2 ring-blue-400')
+                                            : (viewMode === 'work' ? 'bg-emerald-800/90' : 'bg-slate-700 dark:bg-zinc-800')
+                                    }`}>
+                                        <button
+                                            onClick={() => toggleWeek(wIdx)}
+                                            className="flex flex-wrap items-center gap-2 sm:gap-3 text-left font-bold uppercase text-xs tracking-wider"
+                                        >
+                                            <span className="text-base font-black px-1.5 py-0.5 rounded bg-black/20">{collapsed ? '+' : '−'}</span>
+                                            <span>Неделя {wIdx + 1}</span>
+                                            <span className="text-[11px] font-normal text-white/80 lowercase">({dateRangeLabel})</span>
+                                            <span className={`rounded px-2 py-0.5 text-[9px] font-black ${isWeekCurrent(week) ? 'bg-amber-400 text-slate-900' : 'bg-white/15'}`}>
+                                                {weekState}
+                                            </span>
+                                            {collapsed && undoneCount > 0 && (
+                                                <span className="text-[10px] normal-case bg-rose-500/80 px-2 py-0.5 rounded text-white font-semibold">
+                                                    {undoneCount} активных
+                                                </span>
+                                            )}
+                                        </button>
+
+                                        <div className="flex items-center gap-3 w-full sm:w-1/3 min-w-[200px]">
+                                            <div className="flex-1 h-2 bg-black/25 rounded-full overflow-hidden">
+                                                <div
+                                                    className="h-full bg-emerald-400 transition-all duration-500"
+                                                    style={{ width: `${Math.min(worked / (target || 1) * 100, 100)}%` }}
+                                                ></div>
+                                            </div>
+                                            <span className="text-[11px] font-black italic whitespace-nowrap">
+                                                {formatHours(worked) || '0ч'} / {target}ч
+                                            </span>
+                                        </div>
+                                    </div>
+
+                                    {!collapsed && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 sm:gap-4">
+                                            {week.map(dateStr => {
+                                                const dt = new Date(dateStr);
+                                                const isToday = dateStr === todayKey;
+                                                const isWeekend = [0, 6].includes(dt.getDay());
+                                                const dayTasks = data.tasks.filter(t => t.date === dateStr && (t.type || 'study') === viewMode);
+                                                const work = data.work[dateStr] || {};
+
+                                                return (
+                                                    <div
+                                                        key={dateStr}
+                                                        id={`day-${dateStr}`}
+                                                        onDragOver={e => e.preventDefault()}
+                                                        onDrop={e => onDropOnDay(e, dateStr)}
+                                                        className={`flex flex-col bg-slate-50 dark:bg-zinc-800 rounded-xl shadow-sm border transition-all min-h-[460px] ${
+                                                            isToday
+                                                                ? (viewMode === 'work'
+                                                                    ? 'border-emerald-600 ring-2 ring-emerald-500/20 dark:border-emerald-400 dark:ring-emerald-400/30 shadow-md'
+                                                                    : 'border-blue-600 ring-2 ring-blue-500/20 dark:border-sky-400 dark:ring-sky-400/30 shadow-md')
+                                                                : 'border-slate-300 dark:border-zinc-700'
+                                                        }`}
+                                                    >
+                                                        <div className={`p-3 text-center border-b border-slate-300 dark:border-zinc-700 rounded-t-xl flex-shrink-0 ${
+                                                            isToday
+                                                                ? 'bg-blue-50 dark:bg-sky-950/40'
+                                                                : isWeekend
+                                                                ? 'bg-rose-50/60 dark:bg-rose-950/20'
+                                                                : 'bg-white/80 dark:bg-zinc-700/50'
+                                                        }`}>
+                                                            <div className="flex items-center justify-between px-1">
+                                                                <span className="text-[10px] font-black uppercase text-slate-500 dark:text-zinc-400">{dows[dt.getDay()]}</span>
+                                                                {isToday && <span className="bg-blue-600 text-white text-[8px] font-black uppercase px-1.5 py-0.5 rounded">Сегодня</span>}
+                                                            </div>
+                                                            <div className={`text-3xl font-black leading-none my-1 ${viewMode === 'work' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-700 dark:text-sky-400'}`}>
+                                                                {dt.getDate()}
+                                                            </div>
+                                                            <div className="text-[9px] uppercase font-bold text-slate-500 dark:text-zinc-400">
+                                                                {months[dt.getMonth()]}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="p-2.5 border-b border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/20 flex-shrink-0">
+                                                            <div className="flex items-center gap-1">
+                                                                <TimeInput
+                                                                    className="w-0 flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-1.5 py-1 outline-none focus:border-emerald-500 dark:focus:border-emerald-400"
+                                                                    value={work.start || ''}
+                                                                    onChange={v => handleWorkTime(dateStr, 'start', v)}
+                                                                />
+                                                                <span className="text-slate-400 text-[9px] flex-shrink-0">—</span>
+                                                                <TimeInput
+                                                                    className="w-0 flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-1.5 py-1 outline-none focus:border-emerald-500 dark:focus:border-emerald-400"
+                                                                    value={work.end || ''}
+                                                                    onChange={v => handleWorkTime(dateStr, 'end', v)}
+                                                                />
+                                                                <button
+                                                                    onClick={() => toggleBreaks(dateStr)}
+                                                                    title="Перерывы"
+                                                                    className={`flex-shrink-0 px-1.5 py-1 rounded text-[9px] font-black border transition-colors ${
+                                                                        expandedBreaks[dateStr]
+                                                                            ? 'bg-amber-100 border-amber-300 text-amber-700 dark:bg-amber-950/40 dark:border-amber-700 dark:text-amber-300'
+                                                                            : 'bg-white dark:bg-zinc-700 border-slate-300 dark:border-zinc-600 text-slate-500 dark:text-zinc-400'
+                                                                    }`}
+                                                                >
+                                                                    ☕{(work.breaks && work.breaks.length) ? ` ${work.breaks.length}` : ''}
+                                                                </button>
+                                                                {work.hours && (
+                                                                    <span className="flex-shrink-0 text-[10px] font-black text-emerald-600 dark:text-emerald-400">
+                                                                        {formatHours(work.hours)}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+
+                                                            {expandedBreaks[dateStr] && (
+                                                                <div className="mt-2 space-y-1">
+                                                                    {(work.breaks || []).map((b, bi) => (
+                                                                        <div key={bi} className="flex items-center gap-1">
+                                                                            <TimeInput
+                                                                                className="flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-amber-300 dark:border-amber-600 rounded px-1 py-0.5 outline-none"
+                                                                                value={b.start || ''}
+                                                                                onChange={v => handleBreakChange(dateStr, bi, 'start', v)}
+                                                                            />
+                                                                            <span className="text-slate-400 text-[9px]">—</span>
+                                                                            <TimeInput
+                                                                                className="flex-1 min-w-0 text-[10px] bg-white dark:bg-zinc-700 border border-amber-300 dark:border-amber-600 rounded px-1 py-0.5 outline-none"
+                                                                                value={b.end || ''}
+                                                                                onChange={v => handleBreakChange(dateStr, bi, 'end', v)}
+                                                                            />
+                                                                            <button onClick={() => removeBreak(dateStr, bi)} className="text-[10px] text-red-400 font-black px-1">×</button>
+                                                                        </div>
+                                                                    ))}
+                                                                    <button
+                                                                        onClick={() => addBreak(dateStr)}
+                                                                        className="w-full text-[9px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-700 rounded py-0.5 hover:bg-amber-100 transition-colors"
+                                                                    >
+                                                                        + перерыв
+                                                                    </button>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        <div className="p-2 flex-1 space-y-1.5 overflow-y-auto max-h-[380px]">
+                                                            {dayTasks.map(t => (
+                                                                <div
+                                                                    key={t.id}
+                                                                    draggable
+                                                                    onDragStart={e => onDragStart(e, t.id)}
+                                                                    onDragOver={e => onDragOverTask(e, t.id)}
+                                                                    onDrop={e => onDropOnTask(e, dateStr, t.id)}
+                                                                    onDragLeave={() => setDropTarget({ id: null, position: null })}
+                                                                    className={`group task-item relative p-2.5 rounded-lg border flex flex-col justify-between transition-all ${
+                                                                        dropTarget.id === t.id && dropTarget.position === 'top' ? 'border-t-4 border-t-blue-500' : ''
+                                                                    } ${
+                                                                        dropTarget.id === t.id && dropTarget.position === 'bottom' ? 'border-b-4 border-b-blue-500' : ''
+                                                                    } ${taskColorClass(t.color)} ${t.isDone ? 'opacity-40 grayscale' : ''}`}
+                                                                >
+                                                                    <div className="flex items-start gap-2">
+                                                                        <div className="cursor-pointer mt-0.5 flex-shrink-0" onClick={() => toggleDone(t.id)}>
+                                                                            {t.isDone ? (
+                                                                                <div className="w-4 h-4 bg-emerald-500 rounded flex items-center justify-center text-white text-[9px] font-bold">✓</div>
+                                                                            ) : (
+                                                                                <div className="w-4 h-4 border border-slate-400 dark:border-zinc-500 rounded hover:border-emerald-500"></div>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="flex-1 leading-tight font-medium text-slate-800 dark:text-zinc-100 break-words text-[12px]">
+                                                                            {editingId === t.id ? (
+                                                                                <textarea
+                                                                                    autoFocus
+                                                                                    className="w-full bg-transparent outline-none resize-none"
+                                                                                    value={editValue}
+                                                                                    onChange={e => setEditValue(e.target.value)}
+                                                                                    onBlur={() => {
+                                                                                        saveToServer({
+                                                                                            ...data,
+                                                                                            tasks: data.tasks.map(item => item.id === t.id ? { ...item, text: editValue } : item)
+                                                                                        });
+                                                                                        setEditingId(null);
+                                                                                    }}
+                                                                                />
+                                                                            ) : (
+                                                                                <div onClick={() => { setEditingId(t.id); setEditValue(t.text); }}>
+                                                                                    {t.text}
+                                                                                </div>
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+
+                                                                    <div className="task-tools flex items-center justify-between mt-2 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all">
+                                                                        <div className="flex gap-1">
+                                                                            {['default', 'red', 'orange', 'green', 'blue'].map(c => (
+                                                                                <button
+                                                                                    key={c}
+                                                                                    onClick={() => setColor(t.id, c)}
+                                                                                    title={c}
+                                                                                    className={`w-2.5 h-2.5 rounded-full border border-slate-400 ${swatchClass(c)}`}
+                                                                                ></button>
+                                                                            ))}
+                                                                        </div>
+                                                                        <button onClick={() => deleteTask(t.id)} className="text-[9px] font-bold text-red-500 uppercase hover:underline">
+                                                                            Удал.
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+
+                                                        <div className="p-2 border-t border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/30 rounded-b-xl flex-shrink-0">
+                                                            <div className="flex gap-1.5">
+                                                                <input
+                                                                    className="flex-1 min-w-0 text-[11px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1 outline-none focus:border-blue-500 dark:focus:border-sky-400"
+                                                                    placeholder="Новая задача..."
+                                                                    value={newTaskText[dateStr] || ''}
+                                                                    onChange={e => setNewTaskText({ ...newTaskText, [dateStr]: e.target.value })}
+                                                                    onKeyDown={e => e.key === 'Enter' && addTask(dateStr)}
+                                                                />
+                                                                <button
+                                                                    onClick={() => sortDayTasks(dateStr)}
+                                                                    title="Сортировать: красный, оранжевый, зеленый, синий"
+                                                                    className="w-7 h-7 rounded bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 text-[10px] font-black text-slate-600 dark:text-zinc-200"
+                                                                >
+                                                                    1-4
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => addTask(dateStr)}
+                                                                    className={`w-7 h-7 rounded text-white font-black text-xs ${viewMode === 'work' ? 'bg-emerald-600' : 'bg-blue-700 dark:bg-sky-600'}`}
+                                                                >
+                                                                    +
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </section>
+                            );
+                        })}
+                    </div>
+
+                    <div className="mt-12 text-center">
+                        <button
+                            onClick={() => setExtraWeeks(prev => prev + 4)}
+                            className="px-6 py-3 bg-white dark:bg-zinc-800 border-2 border-dashed border-blue-400 dark:border-sky-500 hover:border-blue-600 dark:hover:border-sky-400 text-blue-600 dark:text-sky-400 font-bold rounded-2xl shadow-sm hover:shadow-md transition-all text-sm flex items-center gap-2 mx-auto"
+                        >
+                            <span>➕ Добавить следующие 4 недели</span>
+                        </button>
+                    </div>
+
+                    {isSettingsOpen && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                            <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-6">
+                                <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
+                                    <h3 className="text-lg font-bold text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                                        ⚙️ Настройки и Синхронизация
+                                    </h3>
+                                    <button onClick={() => setIsSettingsOpen(false)} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
+                                </div>
+
+                                <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-xl border border-slate-200 dark:border-zinc-700">
+                                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-zinc-300 flex items-center gap-1.5">
+                                        ☁️ Облачная синхронизация (GitHub Gist)
+                                    </h4>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                        Позволяет синхронизировать задачи и часы между телефоном и компьютером в реальном времени.
+                                    </p>
+
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase text-slate-500 dark:text-zinc-400">Gist ID</label>
+                                        <input
+                                            type="text"
+                                            className="w-full text-xs font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
+                                            value={gistId}
+                                            onChange={e => {
+                                                setGistId(e.target.value);
+                                                localStorage.setItem('tracker_gist_id', e.target.value);
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase text-slate-500 dark:text-zinc-400">GitHub Personal Access Token</label>
+                                        <input
+                                            type="password"
+                                            placeholder="ghp_..."
+                                            className="w-full text-xs font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
+                                            value={githubToken}
+                                            onChange={e => {
+                                                setGithubToken(e.target.value);
+                                                localStorage.setItem('tracker_gh_token', e.target.value);
+                                            }}
+                                        />
+                                    </div>
+
+                                    <div className="flex gap-2 pt-1">
+                                        <button
+                                            onClick={loadData}
+                                            className="flex-1 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs"
+                                        >
+                                            🔄 Проверить синхронизацию
+                                        </button>
+                                        <button
+                                            onClick={copyMobileLink}
+                                            title="Скопировать ссылку со всеми настройками для открытия на телефоне"
+                                            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs"
+                                        >
+                                            {copySuccess ? '✓ Скопировано!' : '📱 Ссылка для телефона'}
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-xl border border-slate-200 dark:border-zinc-700">
+                                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-zinc-300 flex items-center gap-1.5">
+                                        🔒 Защита PIN-кодом
+                                    </h4>
+                                    <p className="text-[11px] text-slate-500 dark:text-zinc-400">
+                                        {savedPin ? 'PIN-код активен. Для отключения оставьте поле пустым и сохраните.' : 'Установите PIN-код для защиты доступа к вашим задачам.'}
+                                    </p>
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="password"
+                                            placeholder="Новый PIN-код..."
+                                            value={newPinInput}
+                                            onChange={e => setNewPinInput(e.target.value)}
+                                            className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded px-2 py-1.5 outline-none"
+                                        />
+                                        <button
+                                            onClick={handleSavePin}
+                                            className="px-4 py-1.5 bg-slate-700 hover:bg-slate-800 text-white font-bold rounded-lg text-xs"
+                                        >
+                                            Сохранить
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-3 bg-slate-50 dark:bg-zinc-700/40 p-4 rounded-xl border border-slate-200 dark:border-zinc-700">
+                                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-600 dark:text-zinc-300 flex items-center gap-1.5">
+                                        💾 Резервные копии
+                                    </h4>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={exportBackup}
+                                            className="flex-1 py-2 bg-slate-200 dark:bg-zinc-700 hover:bg-slate-300 text-slate-800 dark:text-zinc-200 font-bold rounded-lg text-xs flex items-center justify-center gap-1"
+                                        >
+                                            📥 Скачать .json
+                                        </button>
+                                        <label className="flex-1 py-2 bg-slate-200 dark:bg-zinc-700 hover:bg-slate-300 text-slate-800 dark:text-zinc-200 font-bold rounded-lg text-xs flex items-center justify-center gap-1 cursor-pointer">
+                                            📤 Загрузить .json
+                                            <input type="file" accept=".json" onChange={importBackup} className="hidden" />
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

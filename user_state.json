@@ -1,0 +1,21 @@
+{
+    "158377340": {
+        "state": "completed",
+        "name": "тест",
+        "inquiry_type": "photo_estimate",
+        "damage_description": "тест",
+        "photoTokens": [
+            "MyJMRYnyPLDLhVsKc69KBIwfXpEfWiYkrSt82qY9o/ymSZsX6la5PCKCcuKdKWECMORBY0qyfeLWUDLdolutEACNcnkdhgApuBxebrSjhIc="
+        ],
+        "photoPayloads": [
+            {
+                "photo_id": 22521155452,
+                "token": "MyJMRYnyPLDLhVsKc69KBIwfXpEfWiYkrSt82qY9o/ymSZsX6la5PCKCcuKdKWECMORBY0qyfeLWUDLdolutEACNcnkdhgApuBxebrSjhIc=",
+                "url": "https://i.oneme.ru/i?r=BTGBPUwtwgYUeoFhO7rESmr8iAFDqFVJVcVOtlMFtFm63_zZwevdWLvyVx0p08vxgZU"
+            }
+        ],
+        "contact_method": "MAX",
+        "phone": "+79287599119",
+        "final_message": null
+    }
+}

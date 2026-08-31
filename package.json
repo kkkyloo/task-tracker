@@ -1,0 +1,24 @@
+{
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.4",
+    "concurrently": "^9.2.1",
+    "tailwindcss": "^4.2.4"
+  },
+  "name": "node",
+  "version": "1.0.0",
+  "description": "",
+  "main": "babel.min.js",
+  "scripts": {
+    "tailwind": "npx @tailwindcss/cli -i ./input.css -o ./styles.css --watch",
+    "server": "node run.js",
+    "dev": "concurrently \"npm run tailwind\" \"npm run server\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@maxhub/max-bot-api": "^0.2.2",
+    "dotenv": "^17.4.2"
+  }
+}
