@@ -33,7 +33,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "2.4.3";
+        const APP_VERSION = "2.5.0";
 
         const forceRefreshCache = () => {
             if ('caches' in window) {
@@ -53,6 +53,24 @@
         const dows = ['Вс','Пн','Вт','Ср','Чт','Пт','Сб'];
         const fullDows = ['Воскресенье','Понедельник','Вторник','Среда','Четверг','Пятница','Суббота'];
         const colorOrder = { red: 1, orange: 2, green: 3, blue: 4, default: 5 };
+
+        const defaultPairTimes = {
+            1: '08:30 — 10:00',
+            2: '10:15 — 11:45',
+            3: '12:15 — 13:45',
+            4: '14:00 — 15:30',
+            5: '15:45 — 17:15',
+            6: '17:30 — 19:00'
+        };
+
+        const classTypeBadges = {
+            'лекция': 'bg-blue-100 text-blue-800 border-blue-200 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-800',
+            'практика': 'bg-emerald-100 text-emerald-800 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800',
+            'лабораторная': 'bg-purple-100 text-purple-800 border-purple-200 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-800',
+            'семинар': 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800',
+            'экзамен': 'bg-rose-100 text-rose-800 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800',
+            'зачет': 'bg-orange-100 text-orange-800 border-orange-200 dark:bg-orange-950/50 dark:text-orange-300 dark:border-orange-800'
+        };
 
         const formatTimeInput = (raw) => {
             const digits = (raw || '').replace(/\D/g, '').slice(0, 4);
@@ -147,7 +165,7 @@
         }
 
         function App() {
-            const [data, setData] = useState({ tasks: [], work: {}, templates: [] });
+            const [data, setData] = useState({ tasks: [], work: {}, classes: {}, templates: [] });
             const [isEncrypted, setIsEncrypted] = useState(false);
             const [pendingContainer, setPendingContainer] = useState(null);
             const [masterPassword, setMasterPassword] = useState(() => localStorage.getItem('tracker_master_pass') || sessionStorage.getItem('tracker_master_pass') || '');
@@ -176,6 +194,10 @@
             const [syncError, setSyncError] = useState('');
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
             const [copySuccess, setCopySuccess] = useState(false);
+
+            // Classes (Пары) State
+            const [editingClassDate, setEditingClassDate] = useState(null);
+            const [classForm, setClassForm] = useState({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', type: 'лекция' });
 
             // Quick Time Popover & Template Modals
             const [editingTimeDate, setEditingTimeDate] = useState(null);
@@ -314,6 +336,7 @@
                 return {
                     tasks: (raw.tasks || []).map(t => ({ ...t, isUrgent: !!t.isUrgent })),
                     work,
+                    classes: raw.classes || {},
                     templates: raw.templates && raw.templates.length ? raw.templates : defaultTemplates
                 };
             };
@@ -582,6 +605,69 @@
                 reader.readAsText(file);
             };
 
+            // Classes (Пары) Actions
+            const openAddClass = (date, pairNum = 1) => {
+                setClassForm({
+                    id: null,
+                    pairNum: pairNum,
+                    time: defaultPairTimes[pairNum] || '08:30 — 10:00',
+                    subject: '',
+                    room: '',
+                    type: 'лекция'
+                });
+                setEditingClassDate(date);
+            };
+
+            const openEditClass = (date, cls) => {
+                setClassForm({ ...cls });
+                setEditingClassDate(date);
+            };
+
+            const saveClassForm = () => {
+                if (!classForm.subject.trim()) {
+                    alert('Пожалуйста, введите название предмета');
+                    return;
+                }
+                const date = editingClassDate;
+                if (!date) return;
+                const currentClasses = [...(data.classes?.[date] || [])];
+                const newClass = {
+                    id: classForm.id || Date.now(),
+                    pairNum: Number(classForm.pairNum),
+                    time: classForm.time || defaultPairTimes[classForm.pairNum] || '08:30 — 10:00',
+                    subject: classForm.subject.trim(),
+                    room: (classForm.room || '').trim(),
+                    type: classForm.type || 'лекция'
+                };
+                let updated;
+                if (classForm.id) {
+                    updated = currentClasses.map(c => c.id === classForm.id ? newClass : c);
+                } else {
+                    updated = [...currentClasses, newClass];
+                }
+                updated.sort((a, b) => a.pairNum - b.pairNum || a.id - b.id);
+                saveToServer({ ...data, classes: { ...(data.classes || {}), [date]: updated } });
+                setEditingClassDate(null);
+                setClassForm({ id: null, pairNum: 1, time: '08:30 — 10:00', subject: '', room: '', type: 'лекция' });
+            };
+
+            const deleteClass = (date, classId) => {
+                if (confirm('Удалить пару из расписания?')) {
+                    const currentClasses = (data.classes?.[date] || []).filter(c => c.id !== classId);
+                    saveToServer({ ...data, classes: { ...(data.classes || {}), [date]: currentClasses } });
+                }
+            };
+
+            const clearWeekClasses = (weekDates) => {
+                if (confirm('Очистить расписание пар на эту неделю?')) {
+                    const nextClasses = { ...(data.classes || {}) };
+                    weekDates.forEach(d => {
+                        delete nextClasses[d];
+                    });
+                    saveToServer({ ...data, classes: nextClasses });
+                }
+            };
+
             const addTask = (date) => {
                 const text = newTaskText[date] && newTaskText[date].trim();
                 if (!text) return;
@@ -724,13 +810,20 @@
                 weekDates.forEach((d, idx) => {
                     if (data.work[d]) weekDayWork[idx] = data.work[d];
                 });
+                const weekDayClasses = {};
+                weekDates.forEach((d, idx) => {
+                    if (data.classes && data.classes[d] && data.classes[d].length) {
+                        weekDayClasses[idx] = data.classes[d];
+                    }
+                });
 
                 const newTpl = {
                     id: 'tpl-' + Date.now(),
                     name: newTemplateName.trim(),
                     type: viewMode,
                     dayTasks: weekDayTasks,
-                    dayWork: weekDayWork
+                    dayWork: weekDayWork,
+                    dayClasses: weekDayClasses
                 };
 
                 const updated = [...(data.templates || []), newTpl];
@@ -742,6 +835,7 @@
             const applyTemplateToWeek = (template, weekDates) => {
                 const newTasks = [...data.tasks];
                 const newWork = { ...data.work };
+                const newClasses = { ...(data.classes || {}) };
 
                 if (template.workHours) {
                     weekDates.forEach(d => {
@@ -755,6 +849,17 @@
                 if (template.dayWork) {
                     weekDates.forEach((d, idx) => {
                         if (template.dayWork[idx]) newWork[d] = recalcHoursObj(template.dayWork[idx]);
+                    });
+                }
+
+                if (template.dayClasses) {
+                    weekDates.forEach((d, idx) => {
+                        if (template.dayClasses[idx]) {
+                            newClasses[d] = template.dayClasses[idx].map(c => ({
+                                ...c,
+                                id: Date.now() + Math.floor(Math.random() * 100000)
+                            }));
+                        }
                     });
                 }
 
@@ -775,7 +880,7 @@
                     });
                 }
 
-                saveToServer({ ...data, tasks: newTasks, work: newWork });
+                saveToServer({ ...data, tasks: newTasks, work: newWork, classes: newClasses });
                 setTemplateModalWeek(null);
                 alert(`✅ Шаблон "${template.name}" применен к неделе!`);
             };
@@ -908,28 +1013,53 @@
                             </div>
                         </div>
                     )}
-                    <header className="flex flex-col lg:flex-row justify-between items-center mb-8 bg-slate-50 dark:bg-zinc-800 p-5 rounded-2xl shadow-lg border border-slate-300 dark:border-zinc-700 gap-6">
-                        <div className="flex items-center gap-4">
-                            <div>
-                                <h1 className={`text-2xl font-black uppercase tracking-tight transition-colors ${viewMode === 'work' ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-700 dark:text-sky-400'}`}>
-                                    {viewMode === 'study' ? '🎓 ТАСКИ: УЧЕБА' : '💼 ТАСКИ: РАБОТА'}
-                                </h1>
-                                <div className="flex items-center gap-3 mt-1">
-                                    <p className="text-[10px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-widest">
-                                        Сентябрь 2026 — Январь 2027+
-                                    </p>
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-300">
-                                        ✓ {doneTasksCount}/{totalTasksCount} ({completionPercent}%)
+                    <header className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center mb-8 bg-white dark:bg-zinc-800/90 p-4 sm:p-5 rounded-3xl shadow-lg border border-slate-200 dark:border-zinc-700/80 gap-4">
+                        {/* Mode Switcher Tabs + App Info */}
+                        <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3">
+                            <div className="flex bg-slate-100 dark:bg-zinc-900/80 p-1.5 rounded-2xl border border-slate-200 dark:border-zinc-700 shadow-inner">
+                                <button
+                                    onClick={() => { setViewMode('study'); localStorage.setItem('viewMode', 'study'); }}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
+                                        viewMode === 'study'
+                                            ? 'bg-blue-600 text-white shadow-md scale-100'
+                                            : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
+                                    }`}
+                                >
+                                    <span className="text-base">🎓</span>
+                                    <span>УЧЕБА</span>
+                                </button>
+                                <button
+                                    onClick={() => { setViewMode('work'); localStorage.setItem('viewMode', 'work'); }}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
+                                        viewMode === 'work'
+                                            ? 'bg-emerald-600 text-white shadow-md scale-100'
+                                            : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'
+                                    }`}
+                                >
+                                    <span className="text-base">💼</span>
+                                    <span>РАБОТА</span>
+                                </button>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-zinc-700/60 text-slate-700 dark:text-zinc-300 border border-slate-200 dark:border-zinc-600 shadow-sm">
+                                    ✓ {doneTasksCount}/{totalTasksCount} ({completionPercent}%)
+                                </span>
+                                {data.tasks.filter(t => (t.type || 'study') === viewMode && t.isUrgent && !t.isDone).length > 0 && (
+                                    <span className="text-xs font-black px-3 py-1.5 rounded-xl bg-rose-500 text-white shadow animate-pulse flex items-center gap-1.5">
+                                        <span>🔥</span>
+                                        <span>{data.tasks.filter(t => (t.type || 'study') === viewMode && t.isUrgent && !t.isDone).length} дедлайна</span>
                                     </span>
-                                </div>
+                                )}
                             </div>
                         </div>
 
-                        <div className="flex flex-wrap items-center gap-2">
+                        {/* Actions & Tools Bar */}
+                        <div className="flex flex-wrap items-center gap-2 justify-end">
                             <div
                                 onClick={() => syncStatus.startsWith('cloud') && !syncError ? loadData() : setIsSettingsOpen(true)}
                                 title={syncError ? `Ошибка: ${syncError}. Нажмите для настройки.` : 'Статус сохранения / синхронизации. Нажмите для настройки'}
-                                className={`cursor-pointer px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                                className={`cursor-pointer px-3 py-2 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm ${
                                     syncStatus === 'cloud-synced' || syncStatus === 'local-server'
                                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800'
                                         : syncStatus === 'saving'
@@ -948,34 +1078,34 @@
                                         ? 'bg-sky-500'
                                         : 'bg-rose-500'
                                 }`}></span>
-                                <span>{
+                                <span className="font-bold text-xs">{
                                     syncStatus === 'cloud-synced'
-                                        ? '☁️ Облако: ОК'
+                                        ? '☁️ Облако'
                                         : syncStatus === 'local-server'
-                                        ? '💻 Сервер: ОК'
+                                        ? '💻 Сервер'
                                         : syncStatus === 'saving'
                                         ? 'Сохранение...'
                                         : syncStatus === 'local-cached' || syncStatus === 'local-only'
-                                        ? '💾 Локально (клик для облака)'
-                                        : (syncError ? `⚠️ ${syncError}` : '⚠️ Ошибка синхронизации')
+                                        ? '💾 Локально'
+                                        : (syncError ? `⚠️ ${syncError}` : '⚠️ Ошибка')
                                 }</span>
                             </div>
 
                             <button
                                 onClick={scrollToToday}
                                 title="Перейти к сегодняшнему дню"
-                                className="px-3.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 border border-blue-300 dark:bg-sky-950/50 dark:text-sky-300 dark:border-sky-800 font-bold text-xs hover:bg-blue-200 dark:hover:bg-sky-900/60 transition-all flex items-center gap-1"
+                                className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs shadow-md transition-all flex items-center gap-1.5"
                             >
                                 🎯 Сегодня
                             </button>
 
                             <button
                                 onClick={() => setIsPomodoroOpen(!isPomodoroOpen)}
-                                title="Фокус-таймер Pomodoro (25/5)"
-                                className={`px-3 py-1.5 rounded-lg border font-bold text-xs flex items-center gap-1.5 transition-all ${
+                                title="Фокус-таймер Pomodoro"
+                                className={`px-3 py-2 rounded-xl border font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all ${
                                     pomoRunning
                                         ? 'bg-rose-500 text-white border-rose-600 animate-pulse'
-                                        : 'bg-slate-200 border-slate-300 dark:bg-zinc-700 dark:border-zinc-600'
+                                        : 'bg-slate-100 hover:bg-slate-200 border-slate-200 dark:bg-zinc-700 dark:border-zinc-600'
                                 }`}
                             >
                                 <span>⏱️</span>
@@ -983,16 +1113,9 @@
                             </button>
 
                             <button
-                                onClick={() => setViewMode(viewMode === 'study' ? 'work' : 'study')}
-                                className={`px-4 py-1.5 rounded-lg shadow font-bold text-xs transition-all ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-blue-700 hover:bg-blue-800 dark:bg-sky-600 text-white'}`}
-                            >
-                                {viewMode === 'study' ? 'К РАБОТЕ' : 'К УЧЕБЕ'}
-                            </button>
-
-                            <button
                                 onClick={() => setIsDark(!isDark)}
                                 title="Сменить тему"
-                                className="px-3 py-1.5 rounded-lg bg-slate-200 border border-slate-300 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs"
+                                className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 dark:bg-zinc-700 dark:border-zinc-600 font-bold text-xs transition-all shadow-sm"
                             >
                                 {isDark ? '☀️' : '🌙'}
                             </button>
@@ -1001,7 +1124,7 @@
                                 <button
                                     onClick={handleLockNow}
                                     title="Заблокировать трекер прямо сейчас"
-                                    className="px-3 py-1.5 rounded-lg bg-amber-100 border border-amber-300 text-amber-800 dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-300 font-bold text-xs hover:bg-amber-200"
+                                    className="px-3 py-2 rounded-xl bg-amber-100 border border-amber-300 text-amber-800 dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-300 font-bold text-xs hover:bg-amber-200 transition-all shadow-sm"
                                 >
                                     🔒 Блок
                                 </button>
@@ -1010,16 +1133,16 @@
                             <button
                                 onClick={() => setIsSettingsOpen(true)}
                                 title="Настройки синхронизации и защиты"
-                                className="px-3 py-1.5 rounded-lg bg-slate-200 hover:bg-slate-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
+                                className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 dark:hover:bg-zinc-600 border border-slate-200 dark:border-zinc-600 font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all"
                             >
                                 <span>⚙️</span>
-                                <span className="hidden sm:inline">Настройки</span>
+                                <span>Настройки</span>
                             </button>
 
                             <button
                                 onClick={forceRefreshCache}
                                 title={`Очистить кеш и обновить приложение (версия ${APP_VERSION})`}
-                                className="px-2.5 py-1.5 rounded-lg bg-blue-100 hover:bg-blue-200 border border-blue-300 dark:bg-sky-950/40 dark:border-sky-800 text-blue-700 dark:text-sky-300 font-bold text-xs flex items-center gap-1 transition-all"
+                                className="px-2.5 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200 dark:bg-sky-950/40 dark:border-sky-800 text-blue-700 dark:text-sky-300 font-bold text-xs flex items-center gap-1 transition-all shadow-sm"
                             >
                                 <span>🔄</span>
                                 <span className="text-[10px] font-mono">v{APP_VERSION}</span>
@@ -1074,74 +1197,101 @@
 
                             return (
                                 <section key={wIdx} className="transition-all">
-                                    <div className={`flex flex-col lg:flex-row justify-between items-start lg:items-center text-white rounded-2xl p-4 mb-4 shadow-md gap-3 ${
+                                    {/* Week Header Bar */}
+                                    <div className={`flex flex-col lg:flex-row justify-between items-start lg:items-center text-white rounded-3xl p-4 sm:p-5 mb-4 shadow-md gap-4 ${
                                         isWeekCurrent(week)
                                             ? (viewMode === 'work' ? 'bg-emerald-700 ring-2 ring-emerald-400' : 'bg-blue-700 dark:bg-sky-700 ring-2 ring-blue-400')
-                                            : (viewMode === 'work' ? 'bg-emerald-800/90' : 'bg-slate-700 dark:bg-zinc-800')
+                                            : (viewMode === 'work' ? 'bg-emerald-900/90 dark:bg-zinc-800' : 'bg-slate-800 dark:bg-zinc-800')
                                     }`}>
                                         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                                             <button
                                                 onClick={() => toggleWeek(wIdx)}
-                                                className="flex items-center gap-2 text-left font-bold uppercase text-xs tracking-wider"
+                                                className="flex items-center gap-2 text-left font-bold uppercase text-xs tracking-wider group"
                                             >
-                                                <span className="text-base font-black px-2 py-0.5 rounded bg-black/20">{collapsed ? '+' : '−'}</span>
-                                                <span className="text-sm">Неделя {wIdx + 1}</span>
+                                                <span className="text-sm font-black px-2.5 py-1 rounded-xl bg-black/25 group-hover:bg-black/40 transition-colors">
+                                                    {collapsed ? '▶' : '▼'}
+                                                </span>
+                                                <span className="text-sm font-black">Неделя {wIdx + 1}</span>
                                                 <span className="text-[11px] font-normal text-white/80 lowercase">({dateRangeLabel})</span>
-                                                <span className={`rounded-md px-2 py-0.5 text-[9px] font-black ${isWeekCurrent(week) ? 'bg-amber-400 text-slate-900 shadow' : 'bg-white/15'}`}>
+                                                <span className={`rounded-xl px-2.5 py-0.5 text-[9px] font-black tracking-wide ${isWeekCurrent(week) ? 'bg-amber-400 text-slate-900 shadow' : 'bg-white/15'}`}>
                                                     {weekState}
                                                 </span>
                                             </button>
 
                                             {collapsed && undoneCount > 0 && (
-                                                <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded text-white font-semibold">
-                                                    {undoneCount} активных
+                                                <span className="text-[10px] bg-white/20 px-2.5 py-1 rounded-xl text-white font-semibold">
+                                                    {undoneCount} активных задач
                                                 </span>
                                             )}
 
                                             {weekTasks.filter(t => t.isUrgent && !t.isDone).length > 0 && (
-                                                <span className="text-[10px] bg-rose-500 px-2 py-0.5 rounded text-white font-black animate-pulse">
-                                                    🔥 {weekTasks.filter(t => t.isUrgent && !t.isDone).length} дедлайна
+                                                <span className="text-[10px] bg-rose-500 px-2.5 py-1 rounded-xl text-white font-black animate-pulse flex items-center gap-1">
+                                                    <span>🔥</span> {weekTasks.filter(t => t.isUrgent && !t.isDone).length} дедлайна
                                                 </span>
                                             )}
                                         </div>
 
                                         {/* Super Tools for the Week */}
                                         <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto justify-between lg:justify-end">
-                                            <div className="flex items-center gap-1.5">
-                                                <button
-                                                    onClick={() => fillWeekWork(week, '8h-09-18')}
-                                                    title="Заполнить Пн-Пт с 09:00 до 18:00 (Обед 1ч, 40ч в неделю)"
-                                                    className="px-2.5 py-1 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-lg font-bold text-[11px] transition-all flex items-center gap-1"
-                                                >
-                                                    <span>⚡ Пн-Пт 8ч</span>
-                                                </button>
-                                                <button
-                                                    onClick={() => setTemplateModalWeek(week)}
-                                                    title="Применить или сохранить шаблон для этой недели"
-                                                    className="px-2.5 py-1 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-lg font-bold text-[11px] transition-all flex items-center gap-1"
-                                                >
-                                                    <span>📋 Шаблоны</span>
-                                                </button>
-                                                <button
-                                                    onClick={() => clearWeekWork(week)}
-                                                    title="Очистить часы за неделю"
-                                                    className="px-2 py-1 bg-white/10 hover:bg-rose-500/80 text-white/80 hover:text-white rounded-lg font-bold text-[11px] transition-all"
-                                                >
-                                                    🧹
-                                                </button>
-                                            </div>
+                                            {viewMode === 'work' ? (
+                                                <>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <button
+                                                            onClick={() => fillWeekWork(week, '8h-09-18')}
+                                                            title="Заполнить Пн-Пт с 09:00 до 18:00 (Обед 1ч = 40ч)"
+                                                            className="px-3 py-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm"
+                                                        >
+                                                            <span>⚡ Пн-Пт 8ч</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setTemplateModalWeek(week)}
+                                                            title="Применить или сохранить шаблон для этой недели"
+                                                            className="px-3 py-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1 shadow-sm"
+                                                        >
+                                                            <span>📋 Шаблоны</span>
+                                                        </button>
+                                                        <button
+                                                            onClick={() => clearWeekWork(week)}
+                                                            title="Очистить часы за неделю"
+                                                            className="px-2.5 py-1.5 bg-white/10 hover:bg-rose-500 text-white rounded-xl font-bold text-[11px] transition-all"
+                                                        >
+                                                            🧹
+                                                        </button>
+                                                    </div>
 
-                                            <div className="flex items-center gap-3 min-w-[160px]">
-                                                <div className="w-24 h-2 bg-black/25 rounded-full overflow-hidden">
-                                                    <div
-                                                        className="h-full bg-emerald-400 transition-all duration-500"
-                                                        style={{ width: `${Math.min(worked / (target || 1) * 100, 100)}%` }}
-                                                    ></div>
+                                                    <div className="flex items-center gap-3 min-w-[160px]">
+                                                        <div className="w-24 h-2.5 bg-black/30 rounded-full overflow-hidden">
+                                                            <div
+                                                                className="h-full bg-emerald-400 transition-all duration-500 rounded-full"
+                                                                style={{ width: `${Math.min(worked / (target || 1) * 100, 100)}%` }}
+                                                            ></div>
+                                                        </div>
+                                                        <span className="text-[11px] font-black whitespace-nowrap">
+                                                            {formatHours(worked) || '0ч'} / {target}ч
+                                                        </span>
+                                                    </div>
+                                                </>
+                                            ) : (
+                                                <div className="flex items-center gap-2">
+                                                    <button
+                                                        onClick={() => setTemplateModalWeek(week)}
+                                                        title="Применить или сохранить расписание пар и задач для этой недели"
+                                                        className="px-3.5 py-1.5 bg-white/15 hover:bg-white/25 active:scale-95 text-white rounded-xl font-bold text-[11px] transition-all flex items-center gap-1.5 shadow-sm"
+                                                    >
+                                                        <span>📋 Шаблоны пар и ДЗ</span>
+                                                    </button>
+                                                    <button
+                                                        onClick={() => clearWeekClasses(week)}
+                                                        title="Очистить расписание пар на этой неделе"
+                                                        className="px-2.5 py-1.5 bg-white/10 hover:bg-rose-500 text-white rounded-xl font-bold text-[11px] transition-all"
+                                                    >
+                                                        🧹 Пары
+                                                    </button>
+                                                    <span className="text-xs font-bold px-2.5 py-1 rounded-xl bg-black/20 text-white/90">
+                                                        📚 {week.reduce((acc, d) => acc + (data.classes?.[d]?.length || 0), 0)} пар за неделю
+                                                    </span>
                                                 </div>
-                                                <span className="text-[11px] font-black italic whitespace-nowrap">
-                                                    {formatHours(worked) || '0ч'} / {target}ч
-                                                </span>
-                                            </div>
+                                            )}
                                         </div>
                                     </div>
 
@@ -1152,6 +1302,7 @@
                                                 const isToday = dateStr === todayKey;
                                                 const isWeekend = [0, 6].includes(dt.getDay());
                                                 const dayTasks = data.tasks.filter(t => t.date === dateStr && (t.type || 'study') === viewMode);
+                                                const dayClasses = data.classes?.[dateStr] || [];
                                                 const work = data.work[dateStr] || {};
                                                 const hasWork = !!(work.start && work.end);
                                                 const totalBreaksMinutes = (work.breaks || []).reduce((acc, b) => {
@@ -1165,100 +1316,181 @@
                                                         id={`day-${dateStr}`}
                                                         onDragOver={e => e.preventDefault()}
                                                         onDrop={e => onDropOnDay(e, dateStr)}
-                                                        className={`flex flex-col bg-slate-50 dark:bg-zinc-800 rounded-2xl shadow-sm border transition-all min-h-[470px] ${
+                                                        className={`flex flex-col bg-white dark:bg-zinc-800 rounded-3xl shadow-sm border transition-all min-h-[480px] ${
                                                             isToday
                                                                 ? (viewMode === 'work'
-                                                                    ? 'border-emerald-600 ring-2 ring-emerald-500/20 dark:border-emerald-400 dark:ring-emerald-400/30 shadow-md'
-                                                                    : 'border-blue-600 ring-2 ring-blue-500/20 dark:border-sky-400 dark:ring-sky-400/30 shadow-md')
-                                                                : 'border-slate-300 dark:border-zinc-700'
+                                                                    ? 'border-emerald-500 ring-2 ring-emerald-500/30 dark:border-emerald-400 dark:ring-emerald-400/40 shadow-lg'
+                                                                    : 'border-blue-500 ring-2 ring-blue-500/30 dark:border-sky-400 dark:ring-sky-400/40 shadow-lg')
+                                                                : 'border-slate-200 dark:border-zinc-700/80 hover:border-slate-300 dark:hover:border-zinc-600'
                                                         }`}
                                                     >
                                                         {/* Day Header */}
-                                                        <div className={`p-3 border-b rounded-t-2xl flex justify-between items-center ${
+                                                        <div className={`p-3 border-b rounded-t-3xl flex justify-between items-center ${
                                                             isToday
-                                                                ? (viewMode === 'work' ? 'bg-emerald-600 text-white' : 'bg-blue-700 dark:bg-sky-600 text-white')
+                                                                ? (viewMode === 'work' ? 'bg-emerald-600 text-white' : 'bg-blue-600 text-white')
                                                                 : isWeekend
-                                                                ? 'bg-slate-200/80 dark:bg-zinc-700/60 border-slate-300 dark:border-zinc-700 text-slate-800 dark:text-zinc-200'
-                                                                : 'bg-white dark:bg-zinc-800 border-slate-200 dark:border-zinc-700 text-slate-800 dark:text-zinc-200'
+                                                                ? 'bg-slate-100 dark:bg-zinc-700/50 border-slate-200 dark:border-zinc-700 text-slate-700 dark:text-zinc-300'
+                                                                : 'bg-slate-50 dark:bg-zinc-800/80 border-slate-200 dark:border-zinc-700 text-slate-800 dark:text-zinc-200'
                                                         }`}>
                                                             <div className="flex items-baseline gap-1.5">
                                                                 <span className="font-black text-sm tracking-wide">{dows[dt.getDay()]}</span>
-                                                                <span className="text-xs opacity-90">{dt.getDate()} {months[dt.getMonth()]}</span>
+                                                                <span className="text-xs opacity-85 font-medium">{dt.getDate()} {months[dt.getMonth()]}</span>
                                                             </div>
-                                                            {isToday && (
-                                                                <span className="bg-white/20 text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-wider">
-                                                                    СЕГОДНЯ
-                                                                </span>
-                                                            )}
+                                                            <div className="flex items-center gap-1">
+                                                                {isToday && (
+                                                                    <span className="bg-white/20 text-[9px] font-black uppercase px-2 py-0.5 rounded-full tracking-wider">
+                                                                        СЕГОДНЯ
+                                                                    </span>
+                                                                )}
+                                                                {viewMode === 'study' && dayClasses.length > 0 && (
+                                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md ${isToday ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-800 dark:bg-sky-950 dark:text-sky-300'}`}>
+                                                                        {dayClasses.length} пар
+                                                                    </span>
+                                                                )}
+                                                            </div>
                                                         </div>
 
-                                                        {/* Modern Work Hours Block */}
-                                                        <div className="p-2 border-b border-slate-200 dark:border-zinc-700/70 bg-slate-100/60 dark:bg-zinc-800/40">
-                                                            {hasWork ? (
-                                                                <div
-                                                                    onClick={() => setEditingTimeDate(dateStr)}
-                                                                    className="group relative cursor-pointer p-2 rounded-xl bg-white dark:bg-zinc-700 border border-emerald-300 dark:border-emerald-700/50 hover:border-emerald-500 dark:hover:border-emerald-400 shadow-sm transition-all flex items-center justify-between"
-                                                                >
-                                                                    <div className="flex items-center gap-2">
-                                                                        <span className="text-xs font-mono font-bold text-slate-800 dark:text-zinc-100">
-                                                                            {work.start} — {work.end}
-                                                                        </span>
-                                                                        {totalBreaksMinutes > 0 && (
-                                                                            <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-0.5">
-                                                                                ☕ {totalBreaksMinutes}м
-                                                                            </span>
-                                                                        )}
-                                                                    </div>
-                                                                    <div className="flex items-center gap-1.5">
-                                                                        <span className="px-2 py-0.5 rounded-md bg-emerald-500 text-white font-black text-xs shadow-sm">
-                                                                            {formatHours(work.hours) || '0ч'}
-                                                                        </span>
-                                                                        <button
-                                                                            onClick={(e) => { e.stopPropagation(); applyWorkPreset(dateStr, 'clear'); }}
-                                                                            title="Очистить часы"
-                                                                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 font-black text-xs px-1"
-                                                                        >
-                                                                            ✕
-                                                                        </button>
-                                                                    </div>
-                                                                </div>
-                                                            ) : (
-                                                                <div className="flex items-center justify-between gap-1">
-                                                                    <div className="flex items-center gap-1">
-                                                                        <button
-                                                                            onClick={() => applyWorkPreset(dateStr, '8h-09-18')}
-                                                                            className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 text-[10px] font-bold transition-all"
-                                                                            title="09:00 - 18:00 (Обед 1ч = 8ч)"
-                                                                        >
-                                                                            +8ч
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => applyWorkPreset(dateStr, '4h-morning')}
-                                                                            className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-blue-500 hover:text-blue-600 dark:hover:text-sky-400 text-[10px] font-bold transition-all"
-                                                                            title="09:00 - 13:00 (4ч)"
-                                                                        >
-                                                                            +4ч
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => applyWorkPreset(dateStr, 'yesterday')}
-                                                                            className="px-1.5 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-600 text-[10px] font-bold text-slate-500 dark:text-zinc-400"
-                                                                            title="Скопировать со вчерашнего дня"
-                                                                        >
-                                                                            ↩️
-                                                                        </button>
-                                                                    </div>
+                                                        {/* Study Mode: Classes (Пары) Block */}
+                                                        {viewMode === 'study' && (
+                                                            <div className="p-2 border-b border-slate-200 dark:border-zinc-700 bg-blue-50/30 dark:bg-zinc-800/50 space-y-1.5">
+                                                                <div className="flex justify-between items-center px-1">
+                                                                    <span className="text-[10px] font-black uppercase tracking-wider text-blue-800 dark:text-sky-300 flex items-center gap-1">
+                                                                        <span>📚</span> <span>Пары {dayClasses.length > 0 && `(${dayClasses.length})`}</span>
+                                                                    </span>
                                                                     <button
-                                                                        onClick={() => setEditingTimeDate(dateStr)}
-                                                                        className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-zinc-700/80 hover:bg-blue-100 text-slate-600 dark:text-zinc-300 hover:text-blue-700 text-[10px] font-bold transition-all"
+                                                                        onClick={() => openAddClass(dateStr, dayClasses.length + 1)}
+                                                                        className="text-[10px] font-bold text-blue-600 dark:text-sky-400 hover:underline flex items-center gap-0.5"
                                                                     >
-                                                                        ✏️ Вручную
+                                                                        <span>+ Пара</span>
                                                                     </button>
                                                                 </div>
-                                                            )}
-                                                        </div>
+
+                                                                {dayClasses.length > 0 ? (
+                                                                    <div className="space-y-1.5">
+                                                                        {dayClasses.map(cls => (
+                                                                            <div
+                                                                                key={cls.id}
+                                                                                onClick={() => openEditClass(dateStr, cls)}
+                                                                                className="group cursor-pointer p-2 rounded-xl bg-white dark:bg-zinc-700/80 border border-slate-200 dark:border-zinc-600 hover:border-blue-400 dark:hover:border-sky-400 shadow-sm transition-all flex items-start justify-between gap-1.5"
+                                                                            >
+                                                                                <div className="flex-1 min-w-0">
+                                                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                                                        <span className="px-1.5 py-0.2 rounded-md bg-blue-100 dark:bg-blue-950/80 text-blue-800 dark:text-blue-200 font-black text-[9px]">
+                                                                                            {cls.pairNum} пара
+                                                                                        </span>
+                                                                                        <span className="text-[10px] text-slate-500 dark:text-zinc-400 font-mono font-bold">
+                                                                                            {cls.time}
+                                                                                        </span>
+                                                                                        {cls.type && (
+                                                                                            <span className={`px-1.5 py-0.2 rounded-md text-[9px] font-bold border ${classTypeBadges[cls.type] || classTypeBadges['лекция']}`}>
+                                                                                                {cls.type}
+                                                                                            </span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                    <div className="font-bold text-xs text-slate-800 dark:text-zinc-100 mt-1 truncate" title={cls.subject}>
+                                                                                        {cls.subject}
+                                                                                    </div>
+                                                                                    {cls.room && (
+                                                                                        <div className="text-[10px] text-slate-500 dark:text-zinc-400 flex items-center gap-1 mt-0.5 font-medium">
+                                                                                            <span>📍</span> <span>{cls.room}</span>
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
+                                                                                <button
+                                                                                    onClick={(e) => { e.stopPropagation(); deleteClass(dateStr, cls.id); }}
+                                                                                    title="Удалить пару"
+                                                                                    className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 font-black text-xs p-1 transition-opacity"
+                                                                                >
+                                                                                    ✕
+                                                                                </button>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                ) : (
+                                                                    <button
+                                                                        onClick={() => openAddClass(dateStr, 1)}
+                                                                        className="w-full py-1.5 border border-dashed border-slate-300 dark:border-zinc-600 hover:border-blue-400 dark:hover:border-sky-400 text-slate-400 dark:text-zinc-400 hover:text-blue-600 dark:hover:text-sky-300 rounded-xl font-bold text-[10px] flex items-center justify-center gap-1 transition-all"
+                                                                    >
+                                                                        <span>➕ Добавить пару</span>
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        )}
+
+                                                        {/* Work Mode: Work Hours Block */}
+                                                        {viewMode === 'work' && (
+                                                            <div className="p-2 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/40">
+                                                                {hasWork ? (
+                                                                    <div
+                                                                        onClick={() => setEditingTimeDate(dateStr)}
+                                                                        className="group relative cursor-pointer p-2 rounded-xl bg-white dark:bg-zinc-700 border border-emerald-300 dark:border-emerald-700/50 hover:border-emerald-500 dark:hover:border-emerald-400 shadow-sm transition-all flex items-center justify-between"
+                                                                    >
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="text-xs font-mono font-bold text-slate-800 dark:text-zinc-100">
+                                                                                {work.start} — {work.end}
+                                                                            </span>
+                                                                            {totalBreaksMinutes > 0 && (
+                                                                                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-0.5">
+                                                                                    ☕ {totalBreaksMinutes}м
+                                                                                </span>
+                                                                            )}
+                                                                        </div>
+                                                                        <div className="flex items-center gap-1.5">
+                                                                            <span className="px-2 py-0.5 rounded-md bg-emerald-500 text-white font-black text-xs shadow-sm">
+                                                                                {formatHours(work.hours) || '0ч'}
+                                                                            </span>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); applyWorkPreset(dateStr, 'clear'); }}
+                                                                                title="Очистить часы"
+                                                                                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 font-black text-xs px-1"
+                                                                            >
+                                                                                ✕
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="flex items-center justify-between gap-1">
+                                                                        <div className="flex items-center gap-1">
+                                                                            <button
+                                                                                onClick={() => applyWorkPreset(dateStr, '8h-09-18')}
+                                                                                className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-emerald-500 hover:text-emerald-600 dark:hover:text-emerald-400 text-[10px] font-bold transition-all"
+                                                                                title="09:00 - 18:00 (Обед 1ч = 8ч)"
+                                                                            >
+                                                                                +8ч
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => applyWorkPreset(dateStr, '4h-morning')}
+                                                                                className="px-2 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:border-blue-500 hover:text-blue-600 dark:hover:text-sky-400 text-[10px] font-bold transition-all"
+                                                                                title="09:00 - 13:00 (4ч)"
+                                                                            >
+                                                                                +4ч
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={() => applyWorkPreset(dateStr, 'yesterday')}
+                                                                                className="px-1.5 py-1 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 hover:bg-slate-50 dark:hover:bg-zinc-600 text-[10px] font-bold text-slate-500 dark:text-zinc-400"
+                                                                                title="Скопировать со вчерашнего дня"
+                                                                            >
+                                                                                ↩️
+                                                                            </button>
+                                                                        </div>
+                                                                        <button
+                                                                            onClick={() => setEditingTimeDate(dateStr)}
+                                                                            className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-zinc-700/80 hover:bg-blue-100 text-slate-600 dark:text-zinc-300 hover:text-blue-700 text-[10px] font-bold transition-all"
+                                                                        >
+                                                                            ✏️ Вручную
+                                                                        </button>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
 
                                                         {/* Task List */}
-                                                        <div className="flex-1 p-2 space-y-1.5 overflow-y-auto max-h-[380px]">
+                                                        <div className="flex-1 p-2.5 space-y-1.5 overflow-y-auto max-h-[380px]">
+                                                            {dayTasks.length === 0 && dayClasses.length === 0 && !hasWork && (
+                                                                <div className="h-full flex items-center justify-center text-center py-6 text-slate-400 dark:text-zinc-500 text-xs italic">
+                                                                    Нет задач
+                                                                </div>
+                                                            )}
                                                             {dayTasks.map(t => (
                                                                 <div
                                                                     key={t.id}
@@ -1266,7 +1498,7 @@
                                                                     onDragStart={e => onDragStart(e, t.id)}
                                                                     onDragOver={e => onDragOverTask(e, t.id)}
                                                                     onDrop={e => onDropOnTask(e, dateStr, t.id)}
-                                                                    className={`group relative p-2.5 rounded-xl border shadow-sm transition-all duration-150 ${taskColorClass(t.color)} ${
+                                                                    className={`group relative p-2.5 rounded-2xl border shadow-sm transition-all duration-150 ${taskColorClass(t.color)} ${
                                                                         t.isUrgent && !t.isDone
                                                                             ? 'ring-2 ring-rose-500 border-rose-400 dark:border-rose-500'
                                                                             : ''
@@ -1344,11 +1576,11 @@
                                                         </div>
 
                                                         {/* Add Task Input */}
-                                                        <div className="p-2 border-t border-slate-300 dark:border-zinc-700 bg-slate-100/70 dark:bg-zinc-700/30 rounded-b-2xl flex-shrink-0">
+                                                        <div className="p-2 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 rounded-b-3xl flex-shrink-0">
                                                             <div className="flex gap-1.5">
                                                                 <input
-                                                                    className="flex-1 min-w-0 text-[11px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-lg px-2 py-1.5 outline-none focus:border-blue-500 dark:focus:border-sky-400"
-                                                                    placeholder="Новая задача..."
+                                                                    className="flex-1 min-w-0 text-[11px] bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-2.5 py-1.5 outline-none focus:border-blue-500 dark:focus:border-sky-400"
+                                                                    placeholder="Новая задача / ДЗ..."
                                                                     value={newTaskText[dateStr] || ''}
                                                                     onChange={e => setNewTaskText({ ...newTaskText, [dateStr]: e.target.value })}
                                                                     onKeyDown={e => e.key === 'Enter' && addTask(dateStr)}
@@ -1356,13 +1588,13 @@
                                                                 <button
                                                                     onClick={() => sortDayTasks(dateStr)}
                                                                     title="Сортировать: дедлайны, цвета, готовность"
-                                                                    className="w-7 h-7 rounded-lg bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 text-[10px] font-black text-slate-600 dark:text-zinc-200 hover:bg-slate-100"
+                                                                    className="w-8 h-8 rounded-xl bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 text-[10px] font-black text-slate-600 dark:text-zinc-200 hover:bg-slate-100 dark:hover:bg-zinc-600 shadow-sm"
                                                                 >
                                                                     1-4
                                                                 </button>
                                                                 <button
                                                                     onClick={() => addTask(dateStr)}
-                                                                    className={`w-7 h-7 rounded-lg text-white font-black text-xs ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-700 hover:bg-blue-800 dark:bg-sky-600'}`}
+                                                                    className={`w-8 h-8 rounded-xl text-white font-black text-sm shadow-md transition-transform active:scale-95 ${viewMode === 'work' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}
                                                                 >
                                                                     +
                                                                 </button>
@@ -1386,6 +1618,128 @@
                             <span>➕ Добавить следующие 4 недели</span>
                         </button>
                     </div>
+
+                    {/* Class / Pair Editor Modal */}
+                    {editingClassDate && (
+                        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[90]">
+                            <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-3xl shadow-2xl max-w-md w-full space-y-5">
+                                <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
+                                    <div>
+                                        <h3 className="text-base font-black text-slate-800 dark:text-zinc-100 flex items-center gap-2">
+                                            <span>📚</span> <span>{classForm.id ? 'Редактировать пару' : 'Добавить пару в расписание'}</span>
+                                        </h3>
+                                        <p className="text-xs text-slate-500 dark:text-zinc-400 font-medium">
+                                            {fullDows[new Date(editingClassDate).getDay()]}, {new Date(editingClassDate).getDate()} {fullMonths[new Date(editingClassDate).getMonth()]}
+                                        </p>
+                                    </div>
+                                    <button onClick={() => setEditingClassDate(null)} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
+                                </div>
+
+                                <div className="space-y-4">
+                                    {/* Pair number quick buttons */}
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1.5">Номер пары</label>
+                                        <div className="grid grid-cols-6 gap-1.5">
+                                            {[1, 2, 3, 4, 5, 6].map(num => (
+                                                <button
+                                                    key={num}
+                                                    type="button"
+                                                    onClick={() => setClassForm(prev => ({
+                                                        ...prev,
+                                                        pairNum: num,
+                                                        time: defaultPairTimes[num] || prev.time
+                                                    }))}
+                                                    className={`py-2 rounded-xl font-black text-xs transition-all ${
+                                                        Number(classForm.pairNum) === num
+                                                            ? 'bg-blue-600 text-white shadow-md'
+                                                            : 'bg-slate-100 dark:bg-zinc-700 text-slate-700 dark:text-zinc-200 hover:bg-slate-200'
+                                                    }`}
+                                                >
+                                                    {num}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {/* Subject */}
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1">Предмет / Дисциплина</label>
+                                        <input
+                                            type="text"
+                                            autoFocus
+                                            placeholder="Например: Высшая математика, Физика..."
+                                            value={classForm.subject}
+                                            onChange={e => setClassForm(prev => ({ ...prev, subject: e.target.value }))}
+                                            onKeyDown={e => e.key === 'Enter' && saveClassForm()}
+                                            className="w-full text-xs font-semibold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2.5 outline-none focus:border-blue-500 shadow-sm"
+                                        />
+                                    </div>
+
+                                    {/* Time and Room */}
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1">Время</label>
+                                            <input
+                                                type="text"
+                                                placeholder="08:30 — 10:00"
+                                                value={classForm.time}
+                                                onChange={e => setClassForm(prev => ({ ...prev, time: e.target.value }))}
+                                                className="w-full text-xs font-mono font-bold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1">Аудитория / Кабинет</label>
+                                            <input
+                                                type="text"
+                                                placeholder="ауд. 302 / Лаб. 4"
+                                                value={classForm.room}
+                                                onChange={e => setClassForm(prev => ({ ...prev, room: e.target.value }))}
+                                                className="w-full text-xs font-semibold bg-white dark:bg-zinc-700 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Class Type */}
+                                    <div>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-zinc-400 block mb-1.5">Тип занятия</label>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {['лекция', 'практика', 'лабораторная', 'семинар', 'экзамен', 'зачет'].map(t => (
+                                                <button
+                                                    key={t}
+                                                    type="button"
+                                                    onClick={() => setClassForm(prev => ({ ...prev, type: t }))}
+                                                    className={`px-3 py-1.5 rounded-xl font-bold text-xs capitalize transition-all border ${
+                                                        classForm.type === t
+                                                            ? 'bg-slate-900 text-white dark:bg-white dark:text-zinc-900 border-transparent shadow-md'
+                                                            : 'bg-slate-100 dark:bg-zinc-700 text-slate-600 dark:text-zinc-300 border-slate-200 dark:border-zinc-600 hover:bg-slate-200'
+                                                    }`}
+                                                >
+                                                    {t}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 pt-2 border-t border-slate-200 dark:border-zinc-700">
+                                    <button
+                                        type="button"
+                                        onClick={() => setEditingClassDate(null)}
+                                        className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-700 text-slate-700 dark:text-zinc-200 rounded-xl font-bold text-xs transition-all"
+                                    >
+                                        Отмена
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={saveClassForm}
+                                        className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs shadow-lg transition-all"
+                                    >
+                                        {classForm.id ? 'Сохранить изменения' : '➕ Добавить пару'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Quick Time Editor Modal / Popover */}
                     {editingTimeDate && (
@@ -1555,7 +1909,7 @@
 
                     {/* Week Templates Modal */}
                     {templateModalWeek && (
-                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                        <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[90]">
                             <div className="bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 p-6 rounded-3xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto space-y-6">
                                 <div className="flex justify-between items-center border-b border-slate-200 dark:border-zinc-700 pb-3">
                                     <div>
@@ -1563,7 +1917,7 @@
                                             📋 Шаблоны недель
                                         </h3>
                                         <p className="text-xs text-slate-500 dark:text-zinc-400">
-                                            Быстрое авто-заполнение задач и рабочих часов
+                                            Авто-заполнение расписания пар, задач и рабочих часов
                                         </p>
                                     </div>
                                     <button onClick={() => setTemplateModalWeek(null)} className="text-slate-400 hover:text-slate-600 text-lg font-black">✕</button>
@@ -1577,7 +1931,7 @@
                                     <div className="flex gap-2">
                                         <input
                                             type="text"
-                                            placeholder="Название (напр. Учеба: Четная неделя)..."
+                                            placeholder={viewMode === 'study' ? "Например: 1 курс (Числитель)..." : "Например: Смена 5/2 (09-18)..."}
                                             value={newTemplateName}
                                             onChange={e => setNewTemplateName(e.target.value)}
                                             className="flex-1 text-xs bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded-xl px-3 py-2 outline-none focus:border-blue-500"
@@ -1600,9 +1954,18 @@
                                         <div key={tpl.id} className="p-4 rounded-2xl bg-white dark:bg-zinc-700/60 border border-slate-200 dark:border-zinc-600 flex items-center justify-between gap-3 shadow-sm hover:border-blue-400 transition-all">
                                             <div>
                                                 <h5 className="font-bold text-sm text-slate-800 dark:text-zinc-100">{tpl.name}</h5>
-                                                <p className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">
-                                                    {tpl.workHours ? '⏰ Рабочие часы 5/2' : '📝 Набор задач на неделю'}
-                                                </p>
+                                                <div className="text-[11px] text-slate-500 dark:text-zinc-400 mt-1 flex items-center gap-2 flex-wrap">
+                                                    {tpl.dayClasses && Object.values(tpl.dayClasses).flat().length > 0 && (
+                                                        <span className="font-bold text-blue-600 dark:text-sky-400 bg-blue-50 dark:bg-sky-950/50 px-2 py-0.5 rounded-md">
+                                                            📚 {Object.values(tpl.dayClasses).flat().length} пар
+                                                        </span>
+                                                    )}
+                                                    {tpl.workHours && <span className="bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-medium">⏰ Рабочие часы 5/2</span>}
+                                                    {tpl.dayWork && Object.keys(tpl.dayWork).length > 0 && <span className="bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-medium">⏰ Рабочие часы</span>}
+                                                    {tpl.dayTasks && Object.values(tpl.dayTasks).flat().length > 0 && (
+                                                        <span className="bg-slate-100 dark:bg-zinc-600 text-slate-700 dark:text-zinc-300 px-2 py-0.5 rounded-md font-medium">📝 {Object.values(tpl.dayTasks).flat().length} задач</span>
+                                                    )}
+                                                </div>
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <button
