@@ -136,15 +136,53 @@
     <script type="text/babel">
         const { useState, useEffect, useRef, useCallback } = React;
 
-        const APP_VERSION = "3.3.0";
+        const APP_VERSION = "3.4.0";
+
+        const safeStorage = {
+            get: (key) => {
+                try {
+                    const val = localStorage.getItem(key);
+                    if (val !== null && val !== undefined) return val;
+                } catch (e) {}
+                try {
+                    return sessionStorage.getItem(key);
+                } catch (e) {}
+                return null;
+            },
+            set: (key, val) => {
+                try { localStorage.setItem(key, String(val)); } catch (e) {}
+                try { sessionStorage.setItem(key, String(val)); } catch (e) {}
+            },
+            remove: (key) => {
+                try { localStorage.removeItem(key); } catch (e) {}
+                try { sessionStorage.removeItem(key); } catch (e) {}
+            }
+        };
+
+        const createTimeoutSignal = (ms) => {
+            try {
+                if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                    return AbortSignal.timeout(ms);
+                }
+            } catch (e) {}
+            try {
+                const controller = new AbortController();
+                setTimeout(() => controller.abort(), ms);
+                return controller.signal;
+            } catch (e) {
+                return undefined;
+            }
+        };
 
         const forceRefreshCache = () => {
-            if ('caches' in window) {
-                caches.keys().then(names => {
-                    names.forEach(name => caches.delete(name));
-                });
-            }
-            localStorage.setItem('tracker_app_version', APP_VERSION);
+            try {
+                if (typeof window !== 'undefined' && 'caches' in window && window.caches) {
+                    window.caches.keys().then(names => {
+                        names.forEach(name => window.caches.delete(name));
+                    }).catch(() => {});
+                }
+            } catch (e) {}
+            safeStorage.set('tracker_app_version', APP_VERSION);
             if (window.location.protocol === 'file:') {
                 window.location.reload();
             } else {
@@ -452,8 +490,8 @@
             const [data, setData] = useState({ tasks: [], work: {}, classes: {}, templates: [] });
             const [isEncrypted, setIsEncrypted] = useState(false);
             const [pendingContainer, setPendingContainer] = useState(null);
-            const [masterPassword, setMasterPassword] = useState(() => localStorage.getItem('tracker_master_pass') || sessionStorage.getItem('tracker_master_pass') || '');
-            const [isLocked, setIsLocked] = useState(() => !(localStorage.getItem('tracker_master_pass') || sessionStorage.getItem('tracker_master_pass')));
+            const [masterPassword, setMasterPassword] = useState(() => safeStorage.get('tracker_master_pass') || '');
+            const [isLocked, setIsLocked] = useState(() => !safeStorage.get('tracker_master_pass'));
             const [pinInput, setPinInput] = useState('');
             const [pinError, setPinError] = useState(false);
             const [newPassInput, setNewPassInput] = useState('');
@@ -461,19 +499,19 @@
             const [newTaskText, setNewTaskText] = useState({});
             const [editingId, setEditingId] = useState(null);
             const [editValue, setEditValue] = useState("");
-            const [isDark, setIsDark] = useState(() => localStorage.getItem('theme') === 'dark');
-            const [viewMode, setViewMode] = useState(() => localStorage.getItem('viewMode') || 'study');
+            const [isDark, setIsDark] = useState(() => safeStorage.get('theme') === 'dark');
+            const [viewMode, setViewMode] = useState(() => safeStorage.get('viewMode') || 'study');
             const [draggedTaskId, setDraggedTaskId] = useState(null);
             const [dropTarget, setDropTarget] = useState({ id: null, position: null });
             const [collapsedWeeks, setCollapsedWeeks] = useState({});
 
             const [extraWeeks, setExtraWeeks] = useState(() => {
-                const saved = localStorage.getItem('tracker_extra_weeks');
+                const saved = safeStorage.get('tracker_extra_weeks');
                 return saved ? parseInt(saved, 10) : 0;
             });
 
-            const [gistId, setGistId] = useState(() => localStorage.getItem('tracker_gist_id') || DEFAULT_GIST_ID);
-            const [githubToken, setGithubToken] = useState(() => localStorage.getItem('tracker_gh_token') || '');
+            const [gistId, setGistId] = useState(() => safeStorage.get('tracker_gist_id') || DEFAULT_GIST_ID);
+            const [githubToken, setGithubToken] = useState(() => safeStorage.get('tracker_gh_token') || '');
             const [syncStatus, setSyncStatus] = useState('local-only');
             const [syncError, setSyncError] = useState('');
             const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -501,15 +539,17 @@
             const [pomoMode, setPomoMode] = useState('work');
 
             // Material You & Device Customization
-            const [colorTheme, setColorTheme] = useState(() => localStorage.getItem('tracker_color_theme') || 'iris');
-            const [cardDensity, setCardDensity] = useState(() => localStorage.getItem('tracker_density') || 'compact');
-            const [fontTheme, setFontTheme] = useState(() => localStorage.getItem('tracker_font') || 'inter');
+            const [colorTheme, setColorTheme] = useState(() => safeStorage.get('tracker_color_theme') || 'iris');
+            const [cardDensity, setCardDensity] = useState(() => safeStorage.get('tracker_density') || 'compact');
+            const [fontTheme, setFontTheme] = useState(() => safeStorage.get('tracker_font') || 'inter');
 
             useEffect(() => {
-                document.documentElement.setAttribute('data-theme', colorTheme);
-                document.documentElement.setAttribute('data-font', fontTheme);
-                document.body.setAttribute('data-theme', colorTheme);
-                document.body.setAttribute('data-font', fontTheme);
+                try {
+                    document.documentElement.setAttribute('data-theme', colorTheme);
+                    document.documentElement.setAttribute('data-font', fontTheme);
+                    document.body.setAttribute('data-theme', colorTheme);
+                    document.body.setAttribute('data-font', fontTheme);
+                } catch (e) {}
             }, [colorTheme, fontTheme]);
 
             // Escape key listener to close any open modal
@@ -560,16 +600,15 @@
                         const payload = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(hash.replace('#sync=', ''))))));
                         if (payload.gistId) {
                             setGistId(payload.gistId);
-                            localStorage.setItem('tracker_gist_id', payload.gistId);
+                            safeStorage.set('tracker_gist_id', payload.gistId);
                         }
                         if (payload.token) {
                             setGithubToken(payload.token);
-                            localStorage.setItem('tracker_gh_token', payload.token);
+                            safeStorage.set('tracker_gh_token', payload.token);
                         }
                         if (payload.pass) {
                             setMasterPassword(payload.pass);
-                            localStorage.setItem('tracker_master_pass', payload.pass);
-                            sessionStorage.setItem('tracker_master_pass', payload.pass);
+                            safeStorage.set('tracker_master_pass', payload.pass);
                         }
                         window.history.replaceState(null, '', window.location.pathname);
                         alert('✅ Синхронизация и настройки успешно применены!');
@@ -580,30 +619,36 @@
             }, []);
 
             useEffect(() => {
-                const savedVer = localStorage.getItem('tracker_app_version');
+                const savedVer = safeStorage.get('tracker_app_version');
                 if (savedVer && savedVer !== APP_VERSION) {
-                    localStorage.setItem('tracker_app_version', APP_VERSION);
-                    if ('caches' in window) {
-                        caches.keys().then(names => names.forEach(name => caches.delete(name)));
-                    }
+                    safeStorage.set('tracker_app_version', APP_VERSION);
+                    try {
+                        if (typeof window !== 'undefined' && 'caches' in window && window.caches) {
+                            window.caches.keys().then(names => names.forEach(name => window.caches.delete(name))).catch(() => {});
+                        }
+                    } catch (e) {}
                 } else if (!savedVer) {
-                    localStorage.setItem('tracker_app_version', APP_VERSION);
+                    safeStorage.set('tracker_app_version', APP_VERSION);
                 }
             }, []);
 
             useEffect(() => {
-                const html = document.getElementById('html-tag');
-                if (isDark) html.classList.add('dark');
-                else html.classList.remove('dark');
-                localStorage.setItem('theme', isDark ? 'dark' : 'light');
+                try {
+                    const html = document.getElementById('html-tag');
+                    if (html) {
+                        if (isDark) html.classList.add('dark');
+                        else html.classList.remove('dark');
+                    }
+                } catch (e) {}
+                safeStorage.set('theme', isDark ? 'dark' : 'light');
             }, [isDark]);
 
             useEffect(() => {
-                localStorage.setItem('viewMode', viewMode);
+                safeStorage.set('viewMode', viewMode);
             }, [viewMode]);
 
             useEffect(() => {
-                localStorage.setItem('tracker_extra_weeks', extraWeeks);
+                safeStorage.set('tracker_extra_weeks', extraWeeks);
             }, [extraWeeks]);
 
             const timeToMin = (t) => {
@@ -714,10 +759,10 @@
                 let rawContainer = null;
 
                 try {
-                    const localRes = await fetch('/api/data', { signal: AbortSignal.timeout(1500) });
+                    const localRes = await fetch('/api/data', { signal: createTimeoutSignal(1500) });
                     if (localRes.ok) {
                         rawContainer = await localRes.json();
-                        localStorage.setItem('tracker_data_cache', JSON.stringify(rawContainer));
+                        safeStorage.set('tracker_data_cache', JSON.stringify(rawContainer));
                         await processLoadedJson(rawContainer);
                         setSyncStatus('local-server');
                         return;
@@ -735,7 +780,7 @@
                             if (content) {
                                 content = content.replace(/^\uFEFF/, '');
                                 rawContainer = JSON.parse(content);
-                                localStorage.setItem('tracker_data_cache', JSON.stringify(rawContainer));
+                                safeStorage.set('tracker_data_cache', JSON.stringify(rawContainer));
                                 await processLoadedJson(rawContainer);
                                 setSyncStatus(githubToken ? 'cloud-synced' : 'local-cached');
                                 setSyncError('');
@@ -752,7 +797,7 @@
                     }
                 }
 
-                const local = localStorage.getItem('tracker_data_cache');
+                const local = safeStorage.get('tracker_data_cache');
                 if (local) {
                     try {
                         rawContainer = JSON.parse(local);
@@ -789,7 +834,7 @@
                         }
                     }
 
-                    localStorage.setItem('tracker_data_cache', JSON.stringify(containerToSave));
+                    safeStorage.set('tracker_data_cache', JSON.stringify(containerToSave));
 
                     let localSaved = false;
                     try {
@@ -797,7 +842,7 @@
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(containerToSave),
-                            signal: AbortSignal.timeout(2000)
+                            signal: createTimeoutSignal(2000)
                         });
                         if (res.ok) localSaved = true;
                     } catch (e) {}
@@ -858,8 +903,7 @@
                     try {
                         const dec = await decryptData(pendingContainer, pass);
                         setMasterPassword(pass);
-                        localStorage.setItem('tracker_master_pass', pass);
-                        sessionStorage.setItem('tracker_master_pass', pass);
+                        safeStorage.set('tracker_master_pass', pass);
                         setData(normalizeData(dec));
                         setIsEncrypted(true);
                         setIsLocked(false);
@@ -870,8 +914,7 @@
                     }
                 } else {
                     setMasterPassword(pass);
-                    localStorage.setItem('tracker_master_pass', pass);
-                    sessionStorage.setItem('tracker_master_pass', pass);
+                    safeStorage.set('tracker_master_pass', pass);
                     setIsEncrypted(true);
                     setIsLocked(false);
                     setPinInput('');
@@ -888,8 +931,7 @@
                 try {
                     setIsEncrypted(true);
                     setMasterPassword(pass);
-                    localStorage.setItem('tracker_master_pass', pass);
-                    sessionStorage.setItem('tracker_master_pass', pass);
+                    safeStorage.set('tracker_master_pass', pass);
                     saveToServer(data, pass);
                     setNewPassInput('');
                     alert('🔒 Сквозное шифрование AES-256 успешно включено! Ваши задачи зашифрованы в облаке и на всех устройствах.');
@@ -902,8 +944,7 @@
                 if (confirm('Отключить сквозное шифрование? Задачи будут сохранены в открытом виде.')) {
                     setIsEncrypted(false);
                     setMasterPassword('');
-                    localStorage.removeItem('tracker_master_pass');
-                    sessionStorage.removeItem('tracker_master_pass');
+                    safeStorage.remove('tracker_master_pass');
                     saveToServer(data, '');
                     alert('🔓 Шифрование отключено.');
                 }
@@ -911,8 +952,7 @@
 
             const handleLockNow = () => {
                 setMasterPassword('');
-                localStorage.removeItem('tracker_master_pass');
-                sessionStorage.removeItem('tracker_master_pass');
+                safeStorage.remove('tracker_master_pass');
                 setIsLocked(true);
                 setPinInput('');
                 setPinError(false);
@@ -1422,7 +1462,7 @@
                                                     value={gistId}
                                                     onChange={e => {
                                                         setGistId(e.target.value);
-                                                        localStorage.setItem('tracker_gist_id', e.target.value);
+                                                        safeStorage.set('tracker_gist_id', e.target.value);
                                                     }}
                                                 />
                                             </div>
@@ -1435,15 +1475,15 @@
                                                     value={githubToken}
                                                     onChange={e => {
                                                         setGithubToken(e.target.value);
-                                                        localStorage.setItem('tracker_gh_token', e.target.value);
+                                                        safeStorage.set('tracker_gh_token', e.target.value);
                                                     }}
                                                 />
                                             </div>
                                             <button
                                                 onClick={() => {
-                                                    localStorage.removeItem('tracker_master_pass');
+                                                    safeStorage.remove('tracker_master_pass');
                                                     sessionStorage.removeItem('tracker_master_pass');
-                                                    localStorage.removeItem('tracker_data_cache');
+                                                    safeStorage.remove('tracker_data_cache');
                                                     forceRefreshCache();
                                                 }}
                                                 className="w-full py-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold rounded-xl text-xs"
@@ -1469,7 +1509,7 @@
                         <div className="flex flex-wrap items-center justify-between sm:justify-start gap-3">
                             <div className="flex bg-slate-100 dark:bg-zinc-800 p-1.5 rounded-2xl border border-slate-200/80 dark:border-zinc-700 shadow-inner">
                                 <button
-                                    onClick={() => { setViewMode('study'); localStorage.setItem('viewMode', 'study'); }}
+                                    onClick={() => { setViewMode('study'); safeStorage.set('viewMode', 'study'); }}
                                     className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
                                         viewMode === 'study'
                                             ? 'theme-bg-primary shadow-md scale-100'
@@ -1480,7 +1520,7 @@
                                     <span>УЧЕБА</span>
                                 </button>
                                 <button
-                                    onClick={() => { setViewMode('work'); localStorage.setItem('viewMode', 'work'); }}
+                                    onClick={() => { setViewMode('work'); safeStorage.set('viewMode', 'work'); }}
                                     className={`flex items-center gap-2 px-4 py-2 rounded-xl font-black text-xs transition-all ${
                                         viewMode === 'work'
                                             ? 'theme-bg-primary shadow-md scale-100'
@@ -2730,7 +2770,7 @@
                                                     type="button"
                                                     onClick={() => {
                                                         setColorTheme(p.id);
-                                                        localStorage.setItem('tracker_color_theme', p.id);
+                                                        safeStorage.set('tracker_color_theme', p.id);
                                                     }}
                                                     className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all ${
                                                         colorTheme === p.id
@@ -2764,7 +2804,7 @@
                                                     type="button"
                                                     onClick={() => {
                                                         setCardDensity(d.id);
-                                                        localStorage.setItem('tracker_density', d.id);
+                                                        safeStorage.set('tracker_density', d.id);
                                                     }}
                                                     className={`p-2 rounded-xl border text-center transition-all ${
                                                         cardDensity === d.id
@@ -2796,7 +2836,7 @@
                                                     type="button"
                                                     onClick={() => {
                                                         setFontTheme(f.id);
-                                                        localStorage.setItem('tracker_font', f.id);
+                                                        safeStorage.set('tracker_font', f.id);
                                                     }}
                                                     className={`p-2 rounded-xl border text-left transition-all ${f.font} ${
                                                         fontTheme === f.id
@@ -2827,7 +2867,7 @@
                                             value={gistId}
                                             onChange={e => {
                                                 setGistId(e.target.value);
-                                                localStorage.setItem('tracker_gist_id', e.target.value);
+                                                safeStorage.set('tracker_gist_id', e.target.value);
                                             }}
                                         />
                                     </div>
@@ -2841,7 +2881,7 @@
                                             value={githubToken}
                                             onChange={e => {
                                                 setGithubToken(e.target.value);
-                                                localStorage.setItem('tracker_gh_token', e.target.value);
+                                                safeStorage.set('tracker_gh_token', e.target.value);
                                             }}
                                         />
                                     </div>
@@ -2939,9 +2979,8 @@
                                         <button
                                             onClick={() => {
                                                 if (confirm('Сбросить сохраненный пароль и локальный кеш на этом устройстве? (Задачи в облаке Gist не удалятся)')) {
-                                                    localStorage.removeItem('tracker_master_pass');
-                                                    sessionStorage.removeItem('tracker_master_pass');
-                                                    localStorage.removeItem('tracker_data_cache');
+                                                    safeStorage.remove('tracker_master_pass');
+                                                    safeStorage.remove('tracker_data_cache');
                                                     forceRefreshCache();
                                                 }
                                             }}
@@ -2976,8 +3015,47 @@
             );
         }
 
+        class ErrorBoundary extends React.Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false, error: null };
+            }
+            static getDerivedStateFromError(error) {
+                return { hasError: true, error };
+            }
+            componentDidCatch(error, errorInfo) {
+                console.error("App Crash:", error, errorInfo);
+            }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-6 text-center font-sans">
+                            <div className="max-w-md bg-zinc-800 border border-zinc-700 p-6 rounded-3xl space-y-4 shadow-2xl">
+                                <span className="text-4xl block">🛠️</span>
+                                <h2 className="text-lg font-bold">Приложение перезапускается</h2>
+                                <p className="text-xs text-slate-400">
+                                    Произошла ошибка совместимости браузера. Нажмите кнопку ниже для безопасной очистки кэша:
+                                </p>
+                                <button
+                                    onClick={forceRefreshCache}
+                                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 font-bold rounded-xl text-sm shadow-md"
+                                >
+                                    🔄 Очистить кэш и войти
+                                </button>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
         const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        root.render(
+            <ErrorBoundary>
+                <App />
+            </ErrorBoundary>
+        );
     </script>
 </body>
 </html>
