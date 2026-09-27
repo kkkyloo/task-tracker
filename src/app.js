@@ -11,8 +11,9 @@ import {
 } from './sync.js';
 import { parseSchedule, CLASS_TYPES, typeShort } from './schedule.js';
 import { Icon } from './icons.js';
+import { Workspace } from './workspace.js';
 
-const VERSION = '4.2.0';
+const VERSION = '4.3.0';
 
 const TASK_COLORS = [
   ['', 'Без цвета'],
@@ -116,7 +117,7 @@ function Timeline({ classes, sessions, isToday, now }) {
     </div>`;
 }
 
-function TaskRow({ task, onToggle, onOpen, today, showDate, action }) {
+function TaskRow({ task, onToggle, onOpen, onDelete, today, showDate, action }) {
   const onDragStart = (e) => {
     e.dataTransfer.setData('text/task-id', task.id);
     e.dataTransfer.effectAllowed = 'move';
@@ -134,6 +135,7 @@ function TaskRow({ task, onToggle, onOpen, today, showDate, action }) {
           </span>`}
       </div>
       ${action}
+      <button class="task-del" onClick=${(e) => { e.stopPropagation(); onDelete(task.id); }} title="Удалить" aria-label="Удалить задачу">${Icon.trash(15)}</button>
     </li>`;
 }
 
@@ -206,7 +208,7 @@ function DayCard({ date, today, now, data, actions, onOpenTask, onOpenWork, onOp
         </ul>`}
       ${tasks.length > 0 && html`
         <ul class="tasks">
-          ${tasks.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} onToggle=${actions.toggleTask} onOpen=${onOpenTask} />`)}
+          ${tasks.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} onToggle=${actions.toggleTask} onOpen=${onOpenTask} onDelete=${actions.deleteTask} />`)}
         </ul>`}
       <div class="day-foot">
         <${AddTask} onAdd=${(text) => actions.addTask(text, date)} />
@@ -298,7 +300,7 @@ function Backlog({ data, today, actions, onOpenTask }) {
       <section class="card backlog overdue">
         <div class="card-title red">${Icon.alert(16)} Просрочено <span class="count">${overdue.length}</span></div>
         <ul class="tasks">
-          ${shown.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} showDate onToggle=${actions.toggleTask} onOpen=${onOpenTask} action=${toToday(t)} />`)}
+          ${shown.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} showDate onToggle=${actions.toggleTask} onOpen=${onOpenTask} onDelete=${actions.deleteTask} action=${toToday(t)} />`)}
         </ul>
         <div class="row gap">
           ${overdue.length > 5 && html`<button class="link-btn" onClick=${() => setShowAll(!showAll)}>${showAll ? 'Свернуть' : `Показать все (${overdue.length})`}</button>`}
@@ -311,7 +313,7 @@ function Backlog({ data, today, actions, onOpenTask }) {
       <div class="card-title">${Icon.inbox(16)} Без даты ${inbox.length > 0 && html`<span class="count">${inbox.length}</span>`}</div>
       ${inbox.length > 0 && html`
         <ul class="tasks">
-          ${inbox.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} onToggle=${actions.toggleTask} onOpen=${onOpenTask} />`)}
+          ${inbox.map((t) => html`<${TaskRow} key=${t.id} task=${t} today=${today} onToggle=${actions.toggleTask} onOpen=${onOpenTask} onDelete=${actions.deleteTask} />`)}
         </ul>`}
       <${AddTask} onAdd=${(text) => actions.addTask(text, '')} placeholder="Когда-нибудь сделать…" />
     </section>`;
@@ -669,15 +671,15 @@ function App() {
   const [today, setToday] = useState(todayKey());
   const [week, setWeek] = useState(weekStart(todayKey()));
   const [modal, setModal] = useState(null);
-  const [toast, setToastMsg] = useState('');
+  const [toast, setToastMsg] = useState(null);
   const [theme, setThemeState] = useState(store.get(THEME_KEY) || 'auto');
   const syncRef = useRef({ running: false, again: false, timer: null });
   const toastTimer = useRef(null);
 
-  const showToast = useCallback((msg) => {
-    setToastMsg(msg);
+  const showToast = useCallback((msg, undo) => {
+    setToastMsg({ msg, undo, key: Date.now() });
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToastMsg(''), 2600);
+    toastTimer.current = setTimeout(() => setToastMsg(null), undo ? 10000 : 2600);
   }, []);
 
   const commit = useCallback((next) => {
@@ -770,6 +772,16 @@ function App() {
 
   const stamp = () => Date.now();
 
+  const removeItem = (coll, id, msg) => {
+    const prev = dataRef.current[coll][id];
+    if (!prev || prev.deleted) return;
+    change((d) => ({ ...d, [coll]: { ...d[coll], [id]: { id, deleted: true, updatedAt: stamp() } } }));
+    showToast(msg, () => {
+      change((d) => ({ ...d, [coll]: { ...d[coll], [id]: { ...prev, updatedAt: stamp() } } }));
+      setToastMsg(null);
+    });
+  };
+
   const actions = useMemo(() => ({
     toast: showToast,
     addTask: (text, date) => change((d) => {
@@ -780,7 +792,10 @@ function App() {
     }),
     patchTask: (id, p) => change((d) => (d.tasks[id] ? { ...d, tasks: { ...d.tasks, [id]: { ...d.tasks[id], ...p, updatedAt: stamp() } } } : d)),
     toggleTask: (t) => change((d) => ({ ...d, tasks: { ...d.tasks, [t.id]: { ...d.tasks[t.id], done: !t.done, updatedAt: stamp() } } })),
-    deleteTask: (id) => change((d) => ({ ...d, tasks: { ...d.tasks, [id]: { id, deleted: true, updatedAt: stamp() } } })),
+    deleteTask: (id) => removeItem('tasks', id, 'Задача удалена'),
+    upsert: (coll, item) => change((d) => ({ ...d, [coll]: { ...d[coll], [item.id]: { ...item, updatedAt: stamp() } } })),
+    patch: (coll, id, p) => change((d) => (d[coll][id] ? { ...d, [coll]: { ...d[coll], [id]: { ...d[coll][id], ...p, updatedAt: stamp() } } } : d)),
+    remove: (coll, id, msg) => removeItem(coll, id, msg),
     bulkOverdue: (list, mode) => {
       if (!confirm(mode === 'done' ? `Отметить ${list.length} просроченных задач сделанными?` : `Убрать дату у ${list.length} задач?`)) return;
       change((d) => {
@@ -899,13 +914,18 @@ function App() {
         ${visibleDays.map((d) => html`<${DayCard} key=${d} date=${d} today=${today} now=${now} data=${data} actions=${actions} onOpenTask=${openTask} onOpenWork=${openWork} onOpenClass=${openClass} />`)}
       </section>
     </main>
+    <div class="ws-outer"><${Workspace} data=${data} ops=${actions} /></div>
 
     ${modal?.kind === 'task' && data.tasks[modal.task.id] && html`<${TaskModal} task=${data.tasks[modal.task.id]} today=${today} actions=${actions} onClose=${close} />`}
     ${modal?.kind === 'work' && html`<${WorkModal} date=${modal.date} data=${data} now=${now} today=${today} actions=${actions} onClose=${close} />`}
     ${modal?.kind === 'class' && html`<${ClassModal} date=${modal.date} cls=${modal.cls} data=${data} actions=${actions} onClose=${close} />`}
     ${modal?.kind === 'schedule' && html`<${ScheduleModal} actions=${actions} onClose=${close} />`}
     ${modal?.kind === 'settings' && html`<${SettingsModal} data=${data} cfg=${cfg} sync=${syncInfo} theme=${theme} actions=${actions} onClose=${close} onOpenSchedule=${() => setModal({ kind: 'schedule' })} />`}
-    ${toast && html`<div class="toast">${toast}</div>`}
+    ${toast && html`
+      <div class="toast" key=${toast.key}>
+        <span>${toast.msg}</span>
+        ${toast.undo && html`<button class="toast-undo" onClick=${toast.undo}>Отменить</button><i class="toast-bar"></i>`}
+      </div>`}
   `;
 }
 

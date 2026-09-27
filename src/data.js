@@ -5,6 +5,9 @@ export const emptyData = () => ({
   tasks: {},
   classes: {},
   work: {},
+  boards: {},
+  notes: {},
+  docs: {},
   settings: { weeklyTarget: 40, accent: 'indigo', density: 'normal', hideWeekends: false, showTimeline: true, updatedAt: 0 },
 });
 
@@ -15,6 +18,7 @@ export const normalize = (raw) => {
   d.tasks = raw.tasks && typeof raw.tasks === 'object' ? raw.tasks : {};
   d.classes = raw.classes && typeof raw.classes === 'object' ? raw.classes : {};
   d.work = raw.work && typeof raw.work === 'object' ? raw.work : {};
+  for (const k of ['boards', 'notes', 'docs']) d[k] = raw[k] && typeof raw[k] === 'object' ? raw[k] : {};
   d.settings = { ...d.settings, ...Object.fromEntries(Object.entries(raw.settings || {}).filter(([k]) => k in d.settings)) };
   return d;
 };
@@ -115,6 +119,9 @@ export const merge = (a, b) => ({
   tasks: mergeMap(a.tasks, b.tasks),
   classes: mergeMap(a.classes, b.classes),
   work: mergeMap(a.work, b.work),
+  boards: mergeMap(a.boards, b.boards),
+  notes: mergeMap(a.notes, b.notes),
+  docs: mergeMap(a.docs, b.docs),
   settings: (b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings,
 });
 
