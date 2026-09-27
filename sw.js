@@ -1,4 +1,4 @@
-const CACHE = 'tracker-v4.5.0';
+const CACHE = 'tracker-v4.6.0';
 const SHELL = [
   './',
   './index.html',

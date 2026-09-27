@@ -604,3 +604,25 @@ body.no-scroll { overflow: hidden; }
   .tool-label { display: none; }
   .board-hint { display: none; }
 }
+
+.links-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.link-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.link-line { fill: none; stroke-width: 2.2; stroke-linecap: round; pointer-events: none; }
+.link:hover .link-line { stroke-width: 3; }
+.link.sel .link-line { stroke-width: 3; }
+.link-line.draft { stroke-dasharray: 6 5; opacity: .9; }
+.link-label-fo { overflow: visible; pointer-events: none; }
+.link-label { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.link-label span { pointer-events: auto; cursor: pointer; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: 2px 8px; font-size: 12.5px; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; box-shadow: var(--shadow); }
+.link.sel .link-label span { border-color: var(--accent); }
+.link-handle { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--accent); cursor: crosshair; z-index: 2; touch-action: none; transition: transform .1s; }
+.link-handle:hover { transform: scale(1.35); background: var(--accent); }
+.lh-t { top: -22px; left: 50%; margin-left: -7px; }
+.lh-b { bottom: -22px; left: 50%; margin-left: -7px; }
+.lh-l { left: -22px; top: 50%; margin-top: -7px; }
+.lh-r { right: -22px; top: 50%; margin-top: -7px; }
+.note-table .lh-r { right: -54px; }
+.note-table .lh-b { bottom: -54px; }
+.note.link-target { outline: 3px solid var(--accent) !important; outline-offset: 3px; }
+.tool.on { background: var(--accent-soft); color: var(--accent); }
+.note-menu .tool { min-width: 30px; justify-content: center; }

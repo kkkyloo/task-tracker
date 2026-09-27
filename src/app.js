@@ -14,7 +14,7 @@ import { Icon } from './icons.js';
 import { Workspace } from './workspace.js';
 import { configureMedia, flushUploads, retryMissing } from './media.js';
 
-const VERSION = '4.5.0';
+const VERSION = '4.6.0';
 
 const TASK_COLORS = [
   ['', 'Без цвета'],

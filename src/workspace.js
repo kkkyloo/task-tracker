@@ -110,7 +110,47 @@ function LiveText({ value, onChange, className, placeholder, autoFocus, onDone, 
     onKeyDown=${(e) => { if (e.key === 'Escape') e.target.blur(); onKeyDown && onKeyDown(e); }} />`;
 }
 
-function Board({ boardId, notes, ops }) {
+const LINK_COLORS = { default: 'var(--muted)', red: '#e5484d', blue: '#3e8ef7', green: '#30a46c', orange: '#f76b15', purple: '#8e4ec6' };
+
+const edgePoint = (r, tx, ty, gap = 6) => {
+  const cx = r.x + r.w / 2;
+  const cy = r.y + r.h / 2;
+  const dx = tx - cx;
+  const dy = ty - cy;
+  if (!dx && !dy) return { x: cx, y: cy };
+  const t = Math.min((r.w / 2 + gap) / Math.abs(dx || 1e-9), (r.h / 2 + gap) / Math.abs(dy || 1e-9));
+  return { x: cx + dx * t, y: cy + dy * t };
+};
+
+function Board({ boardId, notes: all, ops }) {
+  const notes = all.filter((n) => n.kind !== 'link');
+  const links = all.filter((n) => n.kind === 'link');
+  const [sizes, setSizes] = useState({});
+  const [draft, setDraft] = useState(null);
+  const noteEls = useRef({});
+  const ro = useRef(null);
+  useEffect(() => {
+    ro.current = new ResizeObserver((entries) => requestAnimationFrame(() => {
+      setSizes((prev) => {
+        let next = prev;
+        for (const en of entries) {
+          const id = en.target.dataset.id;
+          const w = en.target.offsetWidth;
+          const h = en.target.offsetHeight;
+          if (!prev[id] || prev[id].w !== w || prev[id].h !== h) { if (next === prev) next = { ...prev }; next[id] = { w, h }; }
+        }
+        return next;
+      });
+    }));
+    return () => ro.current.disconnect();
+  }, []);
+  const bindNote = (id) => (el) => {
+    const old = noteEls.current[id];
+    if (old === el) return;
+    if (old) ro.current?.unobserve(old);
+    noteEls.current[id] = el;
+    if (el) ro.current?.observe(el);
+  };
   const viewKey = `tt2_view_${boardId}`;
   const [view, setView] = useState(() => {
     try { return JSON.parse(store.get(viewKey)) || null; } catch (e) { return null; }
@@ -208,7 +248,34 @@ function Board({ boardId, notes, ops }) {
     addImage(file, toWorld(e.clientX, e.clientY));
   };
 
-  const isBg = (t) => t === canvasRef.current || t.classList.contains('board-layer');
+  const isBg = (t) => t === canvasRef.current || t.classList.contains('board-layer') || t.classList.contains('links-svg');
+  const rectOf = (n) => {
+    if (!n) return null;
+    const t = temp && temp.id === n.id ? temp : null;
+    const s = sizes[n.id];
+    return { x: t ? t.x : n.x, y: t ? t.y : n.y, w: t ? t.w : s?.w || n.w, h: (n.kind === 'table' || n.kind === 'text') && s ? s.h : t ? t.h : n.h };
+  };
+  const noteAt = (cx, cy, except) => {
+    const el = document.elementsFromPoint(cx, cy).find((x) => x.classList?.contains('note') && x.dataset.id !== except);
+    return el ? el.dataset.id : null;
+  };
+  const startLink = (e, n) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setActive(true);
+    setEditing(null);
+    drag.current = { mode: 'link', id: n.id };
+    const p = toWorld(e.clientX, e.clientY);
+    setDraft({ from: n.id, x: p.x, y: p.y, to: null });
+    try { canvasRef.current.setPointerCapture(e.pointerId); } catch (err) {}
+  };
+  const linkPath = (l, a, b) => {
+    const ca = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+    const cb = b.w ? { x: b.x + b.w / 2, y: b.y + b.h / 2 } : b;
+    const p1 = edgePoint(a, cb.x, cb.y);
+    const p2 = b.w ? edgePoint(b, ca.x, ca.y, l?.head === 'none' || l?.head === 'start' ? 6 : 9) : b;
+    return { p1, p2, d: `M${p1.x},${p1.y} L${p2.x},${p2.y}` };
+  };
   const onCanvasDown = (e) => {
     setActive(true);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -256,6 +323,11 @@ function Board({ boardId, notes, ops }) {
     const dx = e.clientX - d.sx;
     const dy = e.clientY - d.sy;
     if (d.mode === 'pan') { setView({ ...v, x: d.vx + dx, y: d.vy + dy }); return; }
+    if (d.mode === 'link') {
+      const p = toWorld(e.clientX, e.clientY);
+      setDraft({ from: d.id, x: p.x, y: p.y, to: noteAt(e.clientX, e.clientY, d.id) });
+      return;
+    }
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
     if (!d.moved) return;
     if (d.mode === 'move') setTemp({ id: d.id, x: d.x + dx / v.s, y: d.y + dy / v.s, w: d.w, h: d.h });
@@ -269,6 +341,27 @@ function Board({ boardId, notes, ops }) {
     const d = drag.current;
     if (d?.mode === 'pinch') { if (pointers.current.size < 2) drag.current = null; return; }
     drag.current = null;
+    if (d?.mode === 'link') {
+      const to = noteAt(e.clientX, e.clientY, d.id);
+      const p = toWorld(e.clientX, e.clientY);
+      setDraft(null);
+      if (to) {
+        const l = { id: uid(), board: boardId, kind: 'link', from: d.id, to, head: 'end', dashed: false, color: 'default', label: '', createdAt: Date.now() };
+        ops.upsertNote(l);
+        setSel(l.id);
+      } else {
+        const src = rectOf(notes.find((n) => n.id === d.id));
+        if (src && Math.hypot(p.x - (src.x + src.w / 2), p.y - (src.y + src.h / 2)) > Math.max(src.w, src.h) / 2 + 30) {
+          const from = notes.find((n) => n.id === d.id);
+          const n = { id: uid(), board: boardId, kind: 'sticky', x: Math.round(p.x - 90), y: Math.round(p.y - 80), w: 180, h: 160, color: from?.kind === 'sticky' ? from.color : 'yellow', text: '', z: maxZ() + 1, createdAt: Date.now() };
+          ops.upsertNote(n);
+          ops.upsertNote({ id: uid(), board: boardId, kind: 'link', from: d.id, to: n.id, head: 'end', dashed: false, color: 'default', label: '', createdAt: Date.now() });
+          setSel(n.id);
+          setEditing(n.id);
+        }
+      }
+      return;
+    }
     if (d && d.mode !== 'pan' && temp && d.moved) {
       ops.patchNote(d.id, { x: Math.round(temp.x), y: Math.round(temp.y), w: Math.round(temp.w), h: Math.round(temp.h), z: maxZ() + 1 });
     } else if (d && d.mode === 'move' && !d.moved && d.wasSel && (d.kind === 'sticky' || d.kind === 'text')) {
@@ -307,9 +400,10 @@ function Board({ boardId, notes, ops }) {
     const onKey = (e) => {
       if (full && e.key === 'Escape' && !sel && !editing) { setFull(false); return; }
       if (!sel || editing || e.target.closest?.('input,textarea')) return;
-      const n = notes.find((x) => x.id === sel);
+      const n = all.find((x) => x.id === sel);
       if (!n) return;
-      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); ops.removeNote(sel); setSel(null); }
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); ops.removeNote(sel); setSel(null); return; }
+      if (n.kind === 'link') { if (e.key === 'Escape') setSel(null); return; }
       else if (e.key === 'Escape') setSel(null);
       else if (e.key === 'Enter' && (n.kind === 'sticky' || n.kind === 'text')) { e.preventDefault(); setEditing(n.id); }
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicate(n); }
@@ -394,6 +488,7 @@ function Board({ boardId, notes, ops }) {
 
   const sorted = [...notes].sort((a, b) => (a.z || 0) - (b.z || 0));
   const selNote = notes.find((n) => n.id === sel);
+  const selLink = links.find((l) => l.id === sel);
   const cf = cellFocus && cellFocus.id === selNote?.id ? cellFocus : null;
 
   return html`
@@ -417,6 +512,48 @@ function Board({ boardId, notes, ops }) {
         onDragOver=${(e) => e.preventDefault()} onDrop=${onDropFiles}
         onDblClick=${(e) => { if (isBg(e.target)) add('sticky', toWorld(e.clientX, e.clientY)); }}>
         <div class="board-layer" style=${{ transform: `translate(${v.x}px, ${v.y}px) scale(${v.s})` }}>
+          <svg class="links-svg" width="1" height="1">
+            <defs>
+              ${Object.entries(LINK_COLORS).map(([k, c]) => html`
+                <marker id=${`ah-${k}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0,0 L10,5 L0,10 z" fill=${c} />
+                </marker>`)}
+              <marker id="ah-sel" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)" />
+              </marker>
+            </defs>
+            ${links.map((l) => {
+              const a = rectOf(notes.find((n) => n.id === l.from));
+              const b = rectOf(notes.find((n) => n.id === l.to));
+              if (!a || !b) return null;
+              const { p1, p2, d } = linkPath(l, a, b);
+              const isSel = sel === l.id;
+              const mk = `url(#ah-${isSel ? 'sel' : l.color || 'default'})`;
+              const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
+              return html`
+                <g key=${l.id} class=${`link ${isSel ? 'sel' : ''}`}>
+                  <path class="link-hit" d=${d}
+                    onPointerDown=${(e) => { e.stopPropagation(); setActive(true); setEditing(null); setSel(l.id); }}
+                    onDblClick=${(e) => { e.stopPropagation(); const t = prompt('Подпись к стрелке', l.label || ''); if (t !== null) ops.patchNote(l.id, { label: t.trim() }); }} />
+                  <path class="link-line" d=${d} stroke=${isSel ? 'var(--accent)' : LINK_COLORS[l.color] || LINK_COLORS.default}
+                    stroke-dasharray=${l.dashed ? '7 6' : undefined}
+                    marker-end=${l.head === 'end' || l.head === 'both' ? mk : undefined}
+                    marker-start=${l.head === 'start' || l.head === 'both' ? mk : undefined} />
+                  ${l.label && html`
+                    <foreignObject x=${mid.x - 80} y=${mid.y - 14} width="160" height="28" class="link-label-fo">
+                      <div class="link-label" onPointerDown=${(e) => { e.stopPropagation(); setSel(l.id); }}
+                        onDblClick=${(e) => { e.stopPropagation(); const t = prompt('Подпись к стрелке', l.label || ''); if (t !== null) ops.patchNote(l.id, { label: t.trim() }); }}><span>${l.label}</span></div>
+                    </foreignObject>`}
+                </g>`;
+            })}
+            ${draft && (() => {
+              const a = rectOf(notes.find((n) => n.id === draft.from));
+              if (!a) return null;
+              const b = draft.to ? rectOf(notes.find((n) => n.id === draft.to)) : { x: draft.x, y: draft.y };
+              const { d } = linkPath({ head: 'end' }, a, b);
+              return html`<path class="link-line draft" d=${d} stroke="var(--accent)" marker-end="url(#ah-sel)" />`;
+            })()}
+          </svg>
           ${sorted.map((n0) => {
             const t = temp && temp.id === n0.id ? temp : null;
             const n = t ? { ...n0, ...t } : n0;
@@ -424,7 +561,7 @@ function Board({ boardId, notes, ops }) {
             const isEdit = editing === n.id;
             const autoH = n.kind === 'table' || n.kind === 'text';
             return html`
-              <div key=${n.id} class=${`note note-${n.kind} ${n.kind === 'sticky' ? `nc-${n.color || 'yellow'}` : ''} ${isSel ? 'sel' : ''} ${isEdit ? 'editing' : ''}`}
+              <div key=${n.id} data-id=${n.id} ref=${bindNote(n.id)} class=${`note note-${n.kind} ${n.kind === 'sticky' ? `nc-${n.color || 'yellow'}` : ''} ${isSel ? 'sel' : ''} ${isEdit ? 'editing' : ''} ${draft?.to === n.id ? 'link-target' : ''}`}
                 style=${{ left: `${n.x}px`, top: `${n.y}px`, width: `${n.w}px`, height: autoH ? 'auto' : `${n.h}px`, minHeight: n.kind === 'text' ? '40px' : undefined, zIndex: n.z || 0 }}
                 onPointerDown=${(e) => onNoteDown(e, n0)}
                 onDblClick=${(e) => { e.stopPropagation(); if (n.kind === 'sticky' || n.kind === 'text') setEditing(n.id); }}>
@@ -448,10 +585,12 @@ function Board({ boardId, notes, ops }) {
                         onChange=${(val) => ops.patchNote(n.id, { text: val })} onDone=${() => setEditing(null)} />`
                     : html`<div class="note-text">${n.text || html`<span class="muted">${n.kind === 'text' ? 'Текст' : 'Клик ещё раз — написать'}</span>`}</div>`}
                 ${isSel && !isEdit && html`<div class=${`note-resize ${autoH ? 'w-only' : ''}`} onPointerDown=${(e) => onNoteDown(e, n0, 'resize')}></div>`}
+                ${isSel && !isEdit && !temp && !draft && ['t', 'r', 'b', 'l'].map((side) => html`
+                  <div class=${`link-handle lh-${side}`} title="Потяни — стрелка" onPointerDown=${(e) => startLink(e, n0)}></div>`)}
               </div>`;
           })}
         </div>
-        ${notes.length === 0 && html`<div class="board-empty">Двойной клик по полю — стикер · Ctrl+V — картинка или текст · тяни фон — двигать · Ctrl+колесо или щипок — масштаб</div>`}
+        ${notes.length === 0 && html`<div class="board-empty">Двойной клик по полю — стикер · тяни за точку у выделенного стикера — стрелка · Ctrl+V — картинка или текст · тяни фон — двигать · Ctrl+колесо или щипок — масштаб</div>`}
         ${selNote && !temp && html`
           <div class="note-menu" onPointerDown=${(e) => e.stopPropagation()}>
             ${selNote.kind === 'sticky' && NOTE_COLORS.map((c) => html`<button class=${`dotc nc-${c} ${selNote.color === c ? 'on' : ''}`} onClick=${() => ops.patchNote(selNote.id, { color: c })} aria-label=${c}></button>`)}
@@ -466,6 +605,18 @@ function Board({ boardId, notes, ops }) {
             <button class="tool" onClick=${() => ops.patchNote(selNote.id, { z: maxZ() + 1 })} title="На передний план">${Icon.up(15)}</button>
             <button class="tool" onClick=${() => duplicate(selNote)} title="Дублировать (Ctrl+D)">${Icon.copy(15)}</button>
             <button class="tool danger" onClick=${() => { ops.removeNote(selNote.id); setSel(null); }} title="Удалить (Delete)">${Icon.trash(15)}</button>
+          </div>`}
+        ${selLink && html`
+          <div class="note-menu" onPointerDown=${(e) => e.stopPropagation()}>
+            ${[['end', '→', 'Стрелка'], ['both', '↔', 'В обе стороны'], ['none', '—', 'Линия']].map(([h, s, t]) => html`
+              <button class=${`tool ${ (selLink.head || 'end') === h ? 'on' : ''}`} title=${t} onClick=${() => ops.patchNote(selLink.id, { head: h })}>${s}</button>`)}
+            <button class=${`tool ${selLink.dashed ? 'on' : ''}`} title="Пунктир" onClick=${() => ops.patchNote(selLink.id, { dashed: !selLink.dashed })}>┄</button>
+            <button class="tool" title="Развернуть" onClick=${() => ops.patchNote(selLink.id, { from: selLink.to, to: selLink.from })}>⇄</button>
+            <span class="menu-sep"></span>
+            ${Object.entries(LINK_COLORS).map(([k, c]) => html`<button class=${`dotc ${ (selLink.color || 'default') === k ? 'on' : ''}`} style=${{ background: c }} title=${k} onClick=${() => ops.patchNote(selLink.id, { color: k })}></button>`)}
+            <span class="menu-sep"></span>
+            <button class="tool" onClick=${() => { const t = prompt('Подпись к стрелке', selLink.label || ''); if (t !== null) ops.patchNote(selLink.id, { label: t.trim() }); }}>Подпись</button>
+            <button class="tool danger" onClick=${() => { ops.removeNote(selLink.id); setSel(null); }} title="Удалить (Delete)">${Icon.trash(15)}</button>
           </div>`}
         ${!active && !full && notes.length > 0 && html`<div class="board-hint">Кликни по доске, чтобы двигать её колесом мыши</div>`}
       </div>
