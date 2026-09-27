@@ -1,0 +1,8 @@
+node_modules/
+.env
+tasks.json
+*.backup.*.json
+logs/
+.system_generated/
+.claude/
+1.txt

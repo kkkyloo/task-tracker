@@ -1,0 +1,10 @@
+{
+  "name": "task-tracker",
+  "version": "4.0.0",
+  "private": true,
+  "description": "",
+  "scripts": {
+    "start": "node run.js"
+  },
+  "license": "ISC"
+}
