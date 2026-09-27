@@ -12,8 +12,9 @@ import {
 import { parseSchedule, CLASS_TYPES, typeShort } from './schedule.js';
 import { Icon } from './icons.js';
 import { Workspace } from './workspace.js';
+import { configureMedia, flushUploads, retryMissing } from './media.js';
 
-const VERSION = '4.3.0';
+const VERSION = '4.4.0';
 
 const TASK_COLORS = [
   ['', 'Без цвета'],
@@ -710,6 +711,8 @@ function App() {
       if (!sameData(latest, merged)) s.again = true;
       if (migrated) showToast('Старые данные перенесены');
       setSync({ status: 'ok', error: '' });
+      flushUploads();
+      retryMissing();
     } catch (e) {
       if (e instanceof PinError) setSync({ status: 'pin', error: 'Неверный PIN' });
       else if (e.status === 401 || e.status === 404) setSync({ status: 'setup', error: e.message });
@@ -769,6 +772,13 @@ function App() {
 
   useEffect(() => { applyTheme(theme); }, [theme]);
   useEffect(() => { applyLook(data.settings); }, [data.settings.accent, data.settings.density]);
+  useEffect(() => {
+    configureMedia({
+      cfg,
+      getGist: () => dataRef.current.settings.mediaGist || '',
+      setGist: (id) => change((d) => ({ ...d, settings: { ...d.settings, mediaGist: id, updatedAt: Date.now() } })),
+    });
+  }, [cfg]);
 
   const stamp = () => Date.now();
 
@@ -796,6 +806,23 @@ function App() {
     upsert: (coll, item) => change((d) => ({ ...d, [coll]: { ...d[coll], [item.id]: { ...item, updatedAt: stamp() } } })),
     patch: (coll, id, p) => change((d) => (d[coll][id] ? { ...d, [coll]: { ...d[coll], [id]: { ...d[coll][id], ...p, updatedAt: stamp() } } } : d)),
     remove: (coll, id, msg) => removeItem(coll, id, msg),
+    removeMany: (coll, ids, msg) => {
+      const prev = ids.map((id) => dataRef.current[coll][id]).filter((x) => x && !x.deleted);
+      if (!prev.length) return;
+      change((d) => {
+        const m = { ...d[coll] };
+        for (const x of prev) m[x.id] = { id: x.id, deleted: true, updatedAt: stamp() };
+        return { ...d, [coll]: m };
+      });
+      showToast(msg, () => {
+        change((d) => {
+          const m = { ...d[coll] };
+          for (const x of prev) m[x.id] = { ...x, updatedAt: stamp() };
+          return { ...d, [coll]: m };
+        });
+        setToastMsg(null);
+      });
+    },
     bulkOverdue: (list, mode) => {
       if (!confirm(mode === 'done' ? `Отметить ${list.length} просроченных задач сделанными?` : `Убрать дату у ${list.length} задач?`)) return;
       change((d) => {

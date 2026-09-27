@@ -1,6 +1,19 @@
 import { html, useState, useEffect, useRef, useMemo } from '../vendor/preact-htm.js';
 import { uid, store } from './util.js';
 import { Icon } from './icons.js';
+import { loadImage, saveImage, imageFromClipboard, pickImage } from './media.js';
+
+export function Img({ id, className, style, alt = '' }) {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let alive = true;
+    loadImage(id).then((u) => alive && setSrc(u));
+    return () => { alive = false; };
+  }, [id]);
+  return src
+    ? html`<img class=${className} style=${style} src=${src} alt=${alt} draggable="false" />`
+    : html`<div class=${`${className || ''} img-loading`} style=${style}>Загрузка…</div>`;
+}
 
 const NOTE_COLORS = ['yellow', 'pink', 'green', 'blue', 'purple', 'orange', 'gray'];
 const live = (map) => Object.values(map || {}).filter((x) => !x.deleted);
@@ -10,6 +23,8 @@ const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 
 const inline = (s) =>
   esc(s)
+    .replace(/!\[([^\]]*)\]\(img:([\w-]+)(?: =(\d+))?\)/g, (m, alt, id, w) => `<span class="doc-img" data-img="${id}"${w ? ` style="width:${w}px"` : ''}><img alt="${alt}" draggable="false"><i class="img-handle"></i></span>`)
+    .replace(/!\[([^\]]*)\]\((https:\/\/[^)\s]+)\)/g, '<img class="doc-ext-img" alt="$1" src="$2">')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
@@ -112,6 +127,43 @@ function Board({ boardId, notes, ops }) {
     if (kind !== 'table') setEditing(n.id);
   };
 
+  const addImage = async (file, at) => {
+    if (!file) return;
+    try {
+      const img = await saveImage(file);
+      const p = at || center();
+      const w = Math.min(420, img.w);
+      const h = Math.round((w * img.h) / img.w);
+      const n = { id: uid(), board: boardId, kind: 'image', src: img.id, x: Math.round(p.x - w / 2), y: Math.round(p.y - h / 2), w, h, z: maxZ() + 1, createdAt: Date.now() };
+      ops.upsertNote(n);
+      setSel(n.id);
+    } catch (e) {}
+  };
+  const hover = useRef(false);
+  useEffect(() => {
+    const onPaste = (e) => {
+      if (!hover.current || e.target.closest?.('input,textarea,[contenteditable]')) return;
+      const file = imageFromClipboard(e);
+      if (file) { e.preventDefault(); addImage(file); return; }
+      const text = e.clipboardData?.getData('text/plain');
+      if (text && text.trim()) {
+        e.preventDefault();
+        const c = center();
+        const n = { id: uid(), board: boardId, kind: 'sticky', x: Math.round(c.x - 90), y: Math.round(c.y - 80), w: 180, h: 160, color: 'yellow', text: text.trim(), z: maxZ() + 1, createdAt: Date.now() };
+        ops.upsertNote(n);
+        setSel(n.id);
+      }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  });
+  const onDropFiles = (e) => {
+    const file = [...(e.dataTransfer?.files || [])].find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+    e.preventDefault();
+    addImage(file, toWorld(e.clientX, e.clientY));
+  };
+
   const onCanvasDown = (e) => {
     if (e.target !== canvasRef.current && !e.target.classList.contains('board-layer')) return;
     setSel(null);
@@ -125,7 +177,7 @@ function Board({ boardId, notes, ops }) {
     e.stopPropagation();
     setSel(n.id);
     if (editing && editing !== n.id) setEditing(null);
-    drag.current = { mode: mode === 'move-grip' ? 'move' : mode, id: n.id, sx: e.clientX, sy: e.clientY, x: n.x, y: n.y, w: n.w, h: n.h, moved: false };
+    drag.current = { mode: mode === 'move-grip' ? 'move' : mode, id: n.id, sx: e.clientX, sy: e.clientY, x: n.x, y: n.y, w: n.w, h: n.h, ratio: n.kind === 'image' ? n.h / n.w : 0, moved: false };
     canvasRef.current.setPointerCapture(e.pointerId);
   };
   const onMove = (e) => {
@@ -136,7 +188,10 @@ function Board({ boardId, notes, ops }) {
     if (d.mode === 'pan') { setView((v) => ({ ...v, x: d.vx + dx, y: d.vy + dy })); return; }
     if (Math.abs(dx) + Math.abs(dy) > 3) d.moved = true;
     if (d.mode === 'move') setTemp({ id: d.id, x: d.x + dx / view.s, y: d.y + dy / view.s, w: d.w, h: d.h });
-    else setTemp({ id: d.id, x: d.x, y: d.y, w: Math.max(80, d.w + dx / view.s), h: Math.max(40, d.h + dy / view.s) });
+    else {
+      const w = Math.max(60, d.w + dx / view.s);
+      setTemp({ id: d.id, x: d.x, y: d.y, w, h: d.ratio ? w * d.ratio : Math.max(40, d.h + dy / view.s) });
+    }
   };
   const onUp = () => {
     const d = drag.current;
@@ -217,6 +272,7 @@ function Board({ boardId, notes, ops }) {
         <button class="tool" onClick=${() => add('sticky')} title="Стикер"><span class="tool-sticky"></span>Стикер</button>
         <button class="tool" onClick=${() => add('text')} title="Текст"><b class="tool-t">T</b>Текст</button>
         <button class="tool" onClick=${() => add('table')} title="Таблица"><span class="tool-table"></span>Таблица</button>
+        <button class="tool" onClick=${async () => addImage(await pickImage())} title="Картинка (или Ctrl+V)">${Icon.image(15)}Картинка</button>
         <span class="spacer"></span>
         <button class="tool icon" onClick=${() => zoom(1 / 1.2)} title="Отдалить">−</button>
         <button class="tool zoom-val" onClick=${() => zoom(0)} title="100%">${Math.round(view.s * 100)}%</button>
@@ -226,6 +282,8 @@ function Board({ boardId, notes, ops }) {
       <div class="board-canvas" ref=${canvasRef}
         style=${{ backgroundSize: `${24 * view.s}px ${24 * view.s}px`, backgroundPosition: `${view.x}px ${view.y}px` }}
         onPointerDown=${onCanvasDown} onPointerMove=${onMove} onPointerUp=${onUp} onPointerCancel=${onUp}
+        onPointerEnter=${() => { hover.current = true; }} onPointerLeave=${() => { hover.current = false; }}
+        onDragOver=${(e) => e.preventDefault()} onDrop=${onDropFiles}
         onDblClick=${(e) => { if (e.target === canvasRef.current || e.target.classList.contains('board-layer')) add('sticky', toWorld(e.clientX, e.clientY)); }}>
         <div class="board-layer" style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})` }}>
           ${sorted.map((n0) => {
@@ -237,8 +295,10 @@ function Board({ boardId, notes, ops }) {
               <div key=${n.id} class=${`note note-${n.kind} ${n.kind === 'sticky' ? `nc-${n.color || 'yellow'}` : ''} ${isSel ? 'sel' : ''}`}
                 style=${{ left: `${n.x}px`, top: `${n.y}px`, width: `${n.w}px`, height: `${n.h}px`, zIndex: n.z || 0 }}
                 onPointerDown=${(e) => onNoteDown(e, n0)}
-                onDblClick=${(e) => { e.stopPropagation(); if (n.kind !== 'table') setEditing(n.id); }}>
-                ${n.kind === 'table'
+                onDblClick=${(e) => { e.stopPropagation(); if (n.kind === 'sticky' || n.kind === 'text') setEditing(n.id); }}>
+                ${n.kind === 'image'
+                  ? html`<${Img} id=${n.src} className="note-img" />`
+                  : n.kind === 'table'
                   ? html`
                     <div class="table-grip" onPointerDown=${(e) => onNoteDown(e, n0, 'move-grip')}>⋮⋮</div>
                     <div class="table-grid" style=${{ gridTemplateColumns: `repeat(${n.cells[0].length}, minmax(0, 1fr))` }}>
@@ -256,7 +316,7 @@ function Board({ boardId, notes, ops }) {
               </div>`;
           })}
         </div>
-        ${notes.length === 0 && html`<div class="board-empty">Двойной клик по полю — новый стикер. Тяни фон, чтобы двигать доску. Ctrl + колесо — масштаб.</div>`}
+        ${notes.length === 0 && html`<div class="board-empty">Двойной клик по полю — новый стикер. Ctrl+V — вставить картинку или текст. Тяни фон, чтобы двигать доску. Ctrl + колесо — масштаб.</div>`}
         ${selNote && html`
           <div class="note-menu" onPointerDown=${(e) => e.stopPropagation()}>
             ${selNote.kind === 'sticky' && NOTE_COLORS.map((c) => html`<button class=${`dotc nc-${c} ${selNote.color === c ? 'on' : ''}`} onClick=${() => ops.patchNote(selNote.id, { color: c })} aria-label=${c}></button>`)}
@@ -272,44 +332,184 @@ function Board({ boardId, notes, ops }) {
     </div>`;
 }
 
-function DocPage({ doc, ops }) {
+function DocPage({ doc, path, ops, onOpen, onAddChild }) {
   const [edit, setEdit] = useState(!doc.body);
   const [body, setBody] = useState(doc.body || '');
   const [title, setTitle] = useState(doc.title || '');
+  const [busy, setBusy] = useState(false);
   const timer = useRef(null);
+  const viewRef = useRef(null);
+  const taRef = useRef(null);
+  const bodyRef = useRef(body);
+  bodyRef.current = body;
+  const titleRef = useRef(title);
+  titleRef.current = title;
   useEffect(() => { setBody(doc.body || ''); setTitle(doc.title || ''); setEdit(!doc.body); }, [doc.id]);
   useEffect(() => { if (!edit) setBody(doc.body || ''); }, [doc.body]);
   const save = (p) => {
     clearTimeout(timer.current);
-    timer.current = setTimeout(() => ops.patchDoc(doc.id, p), 500);
+    timer.current = setTimeout(() => ops.patchDoc(doc.id, { title: titleRef.current, body: bodyRef.current }), 500);
   };
-  const flush = () => { clearTimeout(timer.current); ops.patchDoc(doc.id, { body, title }); };
+  const flush = () => { clearTimeout(timer.current); ops.patchDoc(doc.id, { body: bodyRef.current, title: titleRef.current }); };
+  const setAndSave = (next) => { setBody(next); bodyRef.current = next; clearTimeout(timer.current); ops.patchDoc(doc.id, { body: next, title: titleRef.current }); };
+
+  const insertImage = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const img = await saveImage(file);
+      const tag = `![](img:${img.id} =${Math.min(640, img.w)})`;
+      const cur = bodyRef.current;
+      const ta = taRef.current;
+      if (edit && ta) {
+        const s = ta.selectionStart;
+        const e = ta.selectionEnd;
+        const before = cur.slice(0, s);
+        const pre = before && !before.endsWith('\n') ? '\n' : '';
+        setAndSave(`${before}${pre}${tag}\n${cur.slice(e)}`);
+      } else {
+        setAndSave(`${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${tag}\n`);
+      }
+    } catch (e) {}
+    setBusy(false);
+  };
+
+  useEffect(() => {
+    const onPaste = (e) => {
+      const inThis = viewRef.current?.contains(e.target) || taRef.current === e.target || (!edit && viewRef.current && viewRef.current.matches(':hover'));
+      if (!inThis) return;
+      const file = imageFromClipboard(e);
+      if (file) { e.preventDefault(); insertImage(file); }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  });
+
+  useEffect(() => {
+    if (edit || !viewRef.current) return;
+    viewRef.current.querySelectorAll('.doc-img[data-img]').forEach((el) => {
+      const img = el.querySelector('img');
+      if (img.src) return;
+      loadImage(el.dataset.img).then((u) => { img.src = u; });
+    });
+  });
+
+  const resizing = useRef(null);
+  const onViewDown = (e) => {
+    const h = e.target.closest('.img-handle');
+    if (!h) return;
+    e.preventDefault();
+    const box = h.parentElement;
+    resizing.current = { box, id: box.dataset.img, sx: e.clientX, w: box.getBoundingClientRect().width, max: viewRef.current.clientWidth };
+    h.setPointerCapture(e.pointerId);
+  };
+  const onViewMove = (e) => {
+    const r = resizing.current;
+    if (!r) return;
+    r.cur = Math.round(Math.min(r.max, Math.max(60, r.w + e.clientX - r.sx)));
+    r.box.style.width = `${r.cur}px`;
+  };
+  const onViewUp = () => {
+    const r = resizing.current;
+    resizing.current = null;
+    if (!r || !r.cur) return;
+    const re = new RegExp(`\\(img:${r.id}(?: =\\d+)?\\)`);
+    setAndSave(bodyRef.current.replace(re, `(img:${r.id} =${r.cur})`));
+  };
   const onPreviewClick = (e) => {
     const cb = e.target.closest('input[type=checkbox][data-line]');
     if (!cb) return;
-    const lines = body.split('\n');
+    const lines = bodyRef.current.split('\n');
     const i = Number(cb.dataset.line);
     lines[i] = lines[i].replace(/\[( |x|X)\]/, (m) => (m === '[ ]' ? '[x]' : '[ ]'));
-    const next = lines.join('\n');
-    setBody(next);
-    ops.patchDoc(doc.id, { body: next });
+    setAndSave(lines.join('\n'));
   };
-  const html_ = useMemo(() => renderMarkdown(body), [body]);
+  const rendered = useMemo(() => renderMarkdown(body), [body]);
+  const grow = (el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.max(320, el.scrollHeight)}px`; } };
   return html`
     <div class="doc">
+      ${path.length > 0 && html`
+        <nav class="crumbs">
+          ${path.map((p) => html`<button class="crumb" onClick=${() => onOpen(p.id)}>${p.title || 'Без названия'}</button><span class="crumb-sep">/</span>`)}
+          <span class="crumb cur">${title || 'Без названия'}</span>
+        </nav>`}
       <div class="doc-head">
         <input class="doc-title" value=${title} placeholder="Без названия"
-          onInput=${(e) => { setTitle(e.target.value); save({ title: e.target.value, body }); }} onBlur=${flush} />
+          onInput=${(e) => { setTitle(e.target.value); titleRef.current = e.target.value; save({ title: e.target.value, body: bodyRef.current }); }} onBlur=${flush} />
+        <button class="ghost-btn small" onClick=${async () => insertImage(await pickImage())} title="Картинка (или Ctrl+V)">${Icon.image(15)}</button>
+        <button class="ghost-btn small" onClick=${() => onAddChild(doc.id)} title="Вложенная страница">${Icon.plus(15)} подстраница</button>
         <button class=${edit ? 'primary-btn' : 'ghost-btn'} onClick=${() => { if (edit) flush(); setEdit(!edit); }}>${edit ? 'Готово' : 'Изменить'}</button>
       </div>
+      ${busy && html`<p class="muted small">Сжимаю картинку…</p>`}
       ${edit
         ? html`
-          <textarea class="doc-edit" value=${body} placeholder="Пиши здесь. # Заголовок, - список, - [ ] чекбокс, **жирный**, ссылки — как есть."
-            ref=${(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.max(320, el.scrollHeight)}px`; } }}
-            onInput=${(e) => { setBody(e.target.value); save({ body: e.target.value, title }); e.target.style.height = 'auto'; e.target.style.height = `${Math.max(320, e.target.scrollHeight)}px`; }}
+          <textarea class="doc-edit" ref=${(el) => { taRef.current = el; grow(el); }} value=${body}
+            placeholder="Пиши здесь. # Заголовок, - список, - [ ] чекбокс, **жирный**. Ctrl+V — вставить картинку."
+            onInput=${(e) => { setBody(e.target.value); bodyRef.current = e.target.value; save({ body: e.target.value, title }); grow(e.target); }}
             onBlur=${flush}></textarea>
-          <p class="muted small">Markdown: # заголовки, - списки, - [ ] задачи, **жирный**, *курсив*, \`код\`, > цитата, --- линия.</p>`
-        : html`<div class="doc-view" onClick=${onPreviewClick} onDblClick=${() => setEdit(true)} dangerouslySetInnerHTML=${{ __html: html_ || '<p class="muted">Пусто. Нажми «Изменить».</p>' }}></div>`}
+          <p class="muted small">Markdown: # заголовки, - списки, - [ ] задачи, **жирный**, *курсив*, \`код\`, > цитата, --- линия. Картинки: Ctrl+V, размер — тяни за уголок в режиме просмотра.</p>`
+        : html`<div class="doc-view" ref=${viewRef} tabindex="0"
+            onClick=${onPreviewClick} onDblClick=${(e) => { if (!e.target.closest('.doc-img')) setEdit(true); }}
+            onPointerDown=${onViewDown} onPointerMove=${onViewMove} onPointerUp=${onViewUp}
+            dangerouslySetInnerHTML=${{ __html: rendered || '<p class="muted">Пусто. Нажми «Изменить» или вставь картинку Ctrl+V.</p>' }}></div>`}
+    </div>`;
+}
+
+function DocTree({ docs, active, onOpen, onAddChild, onMove, onRemove }) {
+  const [open, setOpen] = useState(() => {
+    try { return JSON.parse(store.get('tt2_doc_open')) || {}; } catch (e) { return {}; }
+  });
+  const [dropAt, setDropAt] = useState(null);
+  useEffect(() => { store.set('tt2_doc_open', JSON.stringify(open)); }, [open]);
+  const kids = useMemo(() => {
+    const m = {};
+    for (const d of docs) (m[d.parent || ''] = m[d.parent || ''] || []).push(d);
+    Object.values(m).forEach((l) => l.sort(byOrder));
+    return m;
+  }, [docs]);
+  useEffect(() => {
+    const byId = Object.fromEntries(docs.map((d) => [d.id, d]));
+    let p = byId[active]?.parent;
+    const add = {};
+    while (p && byId[p]) { if (!open[p]) add[p] = true; p = byId[p].parent; }
+    if (Object.keys(add).length) setOpen((o) => ({ ...o, ...add }));
+  }, [active]);
+
+  const zoneOf = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    return y < 0.28 ? 'before' : y > 0.72 ? 'after' : 'inside';
+  };
+  const node = (d, depth) => {
+    const children = kids[d.id] || [];
+    const isOpen = open[d.id];
+    return html`
+      <div key=${d.id}>
+        <div class=${`tree-row ${d.id === active ? 'on' : ''} ${dropAt?.id === d.id ? `drop-${dropAt.zone}` : ''}`}
+          style=${{ paddingLeft: `${6 + depth * 14}px` }}
+          draggable="true"
+          onDragStart=${(e) => { e.dataTransfer.setData('text/doc-id', d.id); e.dataTransfer.effectAllowed = 'move'; }}
+          onDragOver=${(e) => { e.preventDefault(); setDropAt({ id: d.id, zone: zoneOf(e) }); }}
+          onDragLeave=${() => setDropAt(null)}
+          onDrop=${(e) => { e.preventDefault(); const id = e.dataTransfer.getData('text/doc-id'); const z = zoneOf(e); setDropAt(null); if (id && id !== d.id) { onMove(id, d.id, z); if (z === 'inside') setOpen((o) => ({ ...o, [d.id]: true })); } }}
+          onClick=${() => onOpen(d.id)}>
+          <button class=${`tree-caret ${children.length ? '' : 'empty'} ${isOpen ? 'open' : ''}`}
+            onClick=${(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [d.id]: !o[d.id] })); }}>${Icon.caret(12)}</button>
+          <span class="tree-name">${d.title || 'Без названия'}</span>
+          <span class="tree-acts">
+            <button title="Вложенная страница" onClick=${(e) => { e.stopPropagation(); setOpen((o) => ({ ...o, [d.id]: true })); onAddChild(d.id); }}>${Icon.plus(13)}</button>
+            <button title="Удалить" onClick=${(e) => { e.stopPropagation(); onRemove(d.id); }}>${Icon.trash(13)}</button>
+          </span>
+        </div>
+        ${isOpen && children.map((c) => node(c, depth + 1))}
+      </div>`;
+  };
+  return html`
+    <div class="tree"
+      onDragOver=${(e) => { if (e.target === e.currentTarget) e.preventDefault(); }}
+      onDrop=${(e) => { if (e.target !== e.currentTarget) return; const id = e.dataTransfer.getData('text/doc-id'); if (id) onMove(id, '', 'root'); }}>
+      ${(kids[''] || []).map((d) => node(d, 0))}
+      <button class="tree-add" onClick=${() => onAddChild('')}>${Icon.plus(14)} Новая страница</button>
     </div>`;
 }
 
@@ -317,16 +517,23 @@ export function Workspace({ data, ops }) {
   const [mode, setMode] = useState(() => store.get('tt2_ws_mode') || 'board');
   const [activeBoard, setActiveBoard] = useState(() => store.get('tt2_ws_board') || '');
   const [activeDoc, setActiveDoc] = useState(() => store.get('tt2_ws_doc') || '');
+  const [treeOpen, setTreeOpen] = useState(false);
   useEffect(() => { store.set('tt2_ws_mode', mode); }, [mode]);
   useEffect(() => { store.set('tt2_ws_board', activeBoard); }, [activeBoard]);
   useEffect(() => { store.set('tt2_ws_doc', activeDoc); }, [activeDoc]);
 
   const boards = live(data.boards).sort(byOrder);
-  const docs = live(data.docs).sort(byOrder);
+  const allDocs = live(data.docs);
+  const byId = Object.fromEntries(allDocs.map((d) => [d.id, d]));
+  const docs = allDocs.map((d) => (d.parent && !byId[d.parent] ? { ...d, parent: '' } : d));
   const boardList = boards.length ? boards : [{ id: 'main', name: 'Доска', virtual: true }];
   const board = boardList.find((b) => b.id === activeBoard) || boardList[0];
-  const doc = docs.find((d) => d.id === activeDoc) || docs[0];
+  const firstRoot = docs.filter((d) => !d.parent).sort(byOrder)[0];
+  const doc = byId[activeDoc] || firstRoot;
   const notes = live(data.notes).filter((n) => n.board === board.id);
+
+  const path = [];
+  for (let p = doc && byId[doc.id]?.parent; p && byId[p] && path.length < 20; p = byId[p].parent) path.unshift(byId[p]);
 
   const ensureBoard = () => { if (board.virtual) ops.upsert('boards', { id: 'main', name: 'Доска', order: 0, createdAt: Date.now() }); };
   const boardOps = {
@@ -342,10 +549,38 @@ export function Workspace({ data, ops }) {
     ops.upsert('boards', { id, name: name.trim(), order: Date.now(), createdAt: Date.now() });
     setActiveBoard(id);
   };
-  const addDoc = () => {
+  const addDoc = (parent = '') => {
     const id = uid();
-    ops.upsert('docs', { id, title: '', body: '', order: Date.now(), createdAt: Date.now() });
+    ops.upsert('docs', { id, parent, title: '', body: '', order: Date.now(), createdAt: Date.now() });
     setActiveDoc(id);
+    setTreeOpen(false);
+  };
+  const isDescendant = (id, of) => {
+    for (let p = byId[id]?.parent; p; p = byId[p]?.parent) if (p === of) return true;
+    return false;
+  };
+  const moveDoc = (id, target, zone) => {
+    if (zone === 'root') { ops.patch('docs', id, { parent: '', order: Date.now() }); return; }
+    if (zone === 'inside') {
+      if (isDescendant(target, id)) return;
+      ops.patch('docs', id, { parent: target, order: Date.now() });
+      return;
+    }
+    const t = byId[target];
+    const parent = t.parent || '';
+    if (parent && (parent === id || isDescendant(parent, id))) return;
+    const sibs = docs.filter((d) => (d.parent || '') === parent && d.id !== id).sort(byOrder);
+    const idx = sibs.findIndex((d) => d.id === target);
+    const prev = zone === 'before' ? sibs[idx - 1] : t;
+    const next = zone === 'before' ? t : sibs[idx + 1];
+    const a = prev ? prev.order || 0 : (next.order || 0) - 1000;
+    const b = next ? next.order || 0 : (prev.order || 0) + 1000;
+    ops.patch('docs', id, { parent, order: (a + b) / 2 });
+  };
+  const removeDoc = (id) => {
+    const ids = [id, ...allDocs.filter((d) => isDescendant(d.id, id)).map((d) => d.id)];
+    if (ids.length > 1 && !confirm(`Удалить страницу и ${ids.length - 1} вложенных?`)) return;
+    ops.removeMany('docs', ids, ids.length > 1 ? 'Страницы удалены' : 'Страница удалена');
   };
 
   return html`
@@ -359,14 +594,23 @@ export function Workspace({ data, ops }) {
           ? html`<${Tabs} items=${boardList} active=${board.id} onSelect=${setActiveBoard} onAdd=${addBoard} addLabel="Новая доска"
               onRename=${(id, name) => { if (board.virtual) ops.upsert('boards', { id, name, order: 0, createdAt: Date.now() }); else ops.patch('boards', id, { name }); }}
               onRemove=${(id) => { if (!board.virtual && confirm('Удалить доску со всем содержимым?')) ops.remove('boards', id, 'Доска удалена'); }} />`
-          : html`<${Tabs} items=${docs.map((d) => ({ id: d.id, name: d.title }))} active=${doc?.id} onSelect=${setActiveDoc} onAdd=${addDoc} addLabel="Новая страница"
-              onRename=${(id, title) => ops.patch('docs', id, { title })}
-              onRemove=${(id) => ops.remove('docs', id, 'Страница удалена')} />`}
+          : html`<button class="ghost-btn small tree-toggle" onClick=${() => setTreeOpen(!treeOpen)}>${Icon.page(14)} Страницы (${docs.length})</button>`}
       </div>
       ${mode === 'board'
         ? html`<${Board} boardId=${board.id} notes=${notes} ops=${boardOps} />`
-        : doc
-          ? html`<${DocPage} key=${doc.id} doc=${doc} ops=${{ patchDoc: (id, p) => ops.patch('docs', id, p) }} />`
-          : html`<div class="ws-empty"><p class="muted">Здесь страницы как в вики: конспекты, планы, ссылки.</p><button class="primary-btn" onClick=${addDoc}>Создать страницу</button></div>`}
+        : html`
+          <div class=${`docs-layout ${treeOpen ? 'tree-shown' : ''}`}>
+            <aside class="docs-side">
+              <${DocTree} docs=${docs} active=${doc?.id}
+                onOpen=${(id) => { setActiveDoc(id); setTreeOpen(false); }}
+                onAddChild=${addDoc} onMove=${moveDoc} onRemove=${removeDoc} />
+            </aside>
+            <div class="docs-main">
+              ${doc
+                ? html`<${DocPage} key=${doc.id} doc=${doc} path=${path} onOpen=${setActiveDoc} onAddChild=${addDoc}
+                    ops=${{ patchDoc: (id, p) => ops.patch('docs', id, p) }} />`
+                : html`<div class="ws-empty"><p class="muted">Страницы как в вики: конспекты, планы, ссылки. Можно вкладывать страницы друг в друга.</p><button class="primary-btn" onClick=${() => addDoc('')}>Создать страницу</button></div>`}
+            </div>
+          </div>`}
     </section>`;
 }

@@ -1,4 +1,4 @@
-const CACHE = 'tracker-v4.3.0';
+const CACHE = 'tracker-v4.4.0';
 const SHELL = [
   './',
   './index.html',
@@ -11,6 +11,7 @@ const SHELL = [
   './src/schedule.js',
   './src/icons.js',
   './src/workspace.js',
+  './src/media.js',
   './vendor/preact-htm.js',
   './vendor/qrcode.js',
   './icons/icon.svg',

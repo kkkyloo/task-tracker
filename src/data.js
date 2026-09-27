@@ -8,7 +8,7 @@ export const emptyData = () => ({
   boards: {},
   notes: {},
   docs: {},
-  settings: { weeklyTarget: 40, accent: 'indigo', density: 'normal', hideWeekends: false, showTimeline: true, updatedAt: 0 },
+  settings: { weeklyTarget: 40, accent: 'indigo', density: 'normal', hideWeekends: false, showTimeline: true, mediaGist: '', updatedAt: 0 },
 });
 
 export const normalize = (raw) => {
@@ -122,7 +122,10 @@ export const merge = (a, b) => ({
   boards: mergeMap(a.boards, b.boards),
   notes: mergeMap(a.notes, b.notes),
   docs: mergeMap(a.docs, b.docs),
-  settings: (b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? b.settings : a.settings,
+  settings: (() => {
+    const [win, lose] = (b.settings?.updatedAt || 0) > (a.settings?.updatedAt || 0) ? [b.settings, a.settings] : [a.settings, b.settings];
+    return { ...win, mediaGist: win?.mediaGist || lose?.mediaGist || '' };
+  })(),
 });
 
 const stable = (v) => {
